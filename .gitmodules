@@ -1,0 +1,3 @@
+[submodule "vendor/network"]
+	path = vendor/network
+	url = https://github.com/MasterQ32/zig-network
