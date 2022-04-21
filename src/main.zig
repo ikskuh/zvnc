@@ -24,8 +24,59 @@ pub fn main() anyerror!void {
     std.debug.print("protocol version:  {}\n", .{server.protocol_version});
     std.debug.print("shared connection: {}\n", .{server.shared_connection});
 
+    const start = std.time.nanoTimestamp();
+
     while (try server.waitEvent()) |event| {
         switch (event) {
+            .set_pixel_format => {}, // use internal handler
+
+            .framebuffer_update_request => |req| {
+                var fb = std.ArrayList(u8).init(std.heap.page_allocator);
+                defer fb.deinit();
+
+                const now = std.time.nanoTimestamp();
+
+                const delta = @intToFloat(f32, now - start) / std.time.ns_per_s;
+
+                var y: usize = 0;
+                while (y < req.height) : (y += 1) {
+                    var x: usize = 0;
+                    while (x < req.width) : (x += 1) {
+                        var px = x + req.x;
+                        var py = y + req.y;
+
+                        var c = Color{
+                            .r = @intToFloat(f32, px) / 319.0,
+                            .g = @intToFloat(f32, py) / 239.0,
+                            .b = @mod(delta, 1.0),
+                        };
+
+                        var buf: [8]u8 = undefined;
+                        const bits = server.pixel_format.encode(&buf, c);
+                        try fb.appendSlice(bits);
+                    }
+                }
+
+                try server.sendFramebufferUpdate(&[_]UpdateRectangle{
+                    UpdateRectangle{
+                        .x = req.x,
+                        .y = req.y,
+                        .width = req.width,
+                        .height = req.height,
+                        .encoding = .raw,
+                        .data = fb.items,
+                    },
+                });
+            },
+
+            .key_event => |ev| {
+                if (ev.key == @intToEnum(Key, ' ')) {
+                    try server.sendBell();
+                } else if (ev.key == .@"return") {
+                    try server.sendServerCutText("HELLO, WORLD!");
+                }
+            },
+
             else => std.debug.print("received unhandled event: {}\n", .{event}),
         }
     }
@@ -50,6 +101,7 @@ const Server = struct {
 
     protocol_version: ProtocolVersion,
     shared_connection: bool,
+    pixel_format: PixelFormat,
 
     pub fn open(allocator: std.mem.Allocator, sock: network.Socket, properties: ServerProperties) !Server {
         errdefer sock.close();
@@ -126,13 +178,15 @@ const Server = struct {
             }
         }
 
+        var pixel_format = PixelFormat.bgrx8888;
+
         // Initialization phase
         const shared_connection = blk: {
             const shared_flag = try reader.readByte(); // 0 => disconnect others, 1 => share with others
 
             try writer.writeIntBig(u16, properties.screen_width); // width
             try writer.writeIntBig(u16, properties.screen_height); // height
-            try PixelFormat.bgrx8888.serialize(writer); // pixel format, 16 byte
+            try pixel_format.serialize(writer); // pixel format, 16 byte
 
             try writer.writeIntBig(u32, desktop_name_len); // virtual desktop name len
             try writer.writeAll(properties.desktop_name); // virtual desktop name bytes
@@ -146,6 +200,7 @@ const Server = struct {
 
             .protocol_version = protocol_version,
             .shared_connection = shared_connection,
+            .pixel_format = pixel_format,
         };
     }
 
@@ -170,6 +225,7 @@ const Server = struct {
                 try reader.readNoEof(&padding);
 
                 const pf = try PixelFormat.deserialize(reader);
+                self.pixel_format = pf; // update the current pixel format
                 return ClientEvent{ .set_pixel_format = pf };
             },
             .set_encodings => {
@@ -255,6 +311,77 @@ const Server = struct {
             // },
         }
     }
+
+    pub fn sendFramebufferUpdate(self: *Server, rectangles: []const UpdateRectangle) !void {
+        const num_rects = try std.math.cast(u16, rectangles.len);
+
+        var buffered_writer = std.io.bufferedWriter(self.socket.writer());
+        const writer = buffered_writer.writer();
+        try writer.writeByte(@enumToInt(ServerMessageType.framebuffer_update));
+        try writer.writeByte(0); // padding
+
+        try writer.writeIntBig(u16, num_rects);
+
+        for (rectangles) |rect| {
+            try writer.writeIntBig(u16, rect.x);
+            try writer.writeIntBig(u16, rect.y);
+            try writer.writeIntBig(u16, rect.width);
+            try writer.writeIntBig(u16, rect.height);
+            try writer.writeIntBig(i32, @enumToInt(rect.encoding));
+            try writer.writeAll(rect.data);
+        }
+
+        try buffered_writer.flush();
+    }
+
+    /// Changes entries in the clients color map.
+    /// - `first` is the first color entry to change.
+    /// - `colors` is a slice of colors that will be written to the client color map at the offset `first`.
+    pub fn sendSetColorMapEntries(self: *Server, first: u16, colors: []const Color) !void {
+        const color_count = try std.math.cast(u16, colors.len);
+
+        var writer = self.socket.writer();
+        try writer.writeByte(@enumToInt(ServerMessageType.set_color_map_entries));
+        try writer.writeByte(0); // padding
+
+        try writer.writeIntBig(u16, first);
+        try writer.writeIntBig(u16, color_count);
+
+        for (colors) |c| {
+            try writer.writeIntBig(u16, @floatToInt(u16, std.math.maxInt(u16) * std.math.clamp(c.r, 0.0, 1.0)));
+            try writer.writeIntBig(u16, @floatToInt(u16, std.math.maxInt(u16) * std.math.clamp(c.g, 0.0, 1.0)));
+            try writer.writeIntBig(u16, @floatToInt(u16, std.math.maxInt(u16) * std.math.clamp(c.b, 0.0, 1.0)));
+        }
+    }
+
+    /// Rings a signal on the viewer if possible.
+    pub fn sendBell(self: *Server) !void {
+        var writer = self.socket.writer();
+        try writer.writeByte(@enumToInt(ServerMessageType.bell));
+    }
+
+    /// Sets the new clipboard content of the viewer.
+    /// - `text` is the ISO 8859-1 (Latin-1) encoded text.
+    pub fn sendServerCutText(self: *Server, text: []const u8) !void {
+        const length = try std.math.cast(u32, text.len);
+
+        var writer = self.socket.writer();
+        try writer.writeByte(@enumToInt(ServerMessageType.server_cut_text));
+        try writer.writeByte(0); // padding
+        try writer.writeByte(0); // padding
+        try writer.writeByte(0); // padding
+        try writer.writeIntBig(u32, length);
+        try writer.writeAll(text);
+    }
+};
+
+pub const UpdateRectangle = struct {
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+    encoding: Encoding,
+    data: []const u8,
 };
 
 pub const ClientEvent = union(ClientMessageType) {
@@ -341,9 +468,49 @@ pub const PixelFormat = struct {
     }
 
     pub fn encode(pf: PixelFormat, buf: *[8]u8, color: Color) []u8 {
-        _ = pf;
-        _ = buf;
-        _ = color;
+        var encoded: u64 = 0;
+
+        if (pf.true_color != 0) {
+            encoded |= @floatToInt(u64, @intToFloat(f32, pf.red_max) * color.r) << @truncate(u6, pf.red_shift);
+            encoded |= @floatToInt(u64, @intToFloat(f32, pf.green_max) * color.g) << @truncate(u6, pf.green_shift);
+            encoded |= @floatToInt(u64, @intToFloat(f32, pf.blue_max) * color.b) << @truncate(u6, pf.blue_shift);
+        } else {
+            @panic("indexed color encoding not implemented yet");
+        }
+
+        const endianess = switch (pf.big_endian) {
+            0 => std.builtin.Endian.Little,
+            else => std.builtin.Endian.Big,
+        };
+
+        switch (pf.bpp) {
+            8 => {
+                const part = buf[0..1];
+                std.mem.writeInt(u8, part, @truncate(u8, encoded), endianess);
+                return part;
+            },
+            16 => {
+                const part = buf[0..2];
+                std.mem.writeInt(u16, part, @truncate(u16, encoded), endianess);
+                return part;
+            },
+            24 => {
+                const part = buf[0..3];
+                std.mem.writeInt(u24, part, @truncate(u24, encoded), endianess);
+                return part;
+            },
+            32 => {
+                const part = buf[0..4];
+                std.mem.writeInt(u32, part, @truncate(u32, encoded), endianess);
+                return part;
+            },
+            64 => {
+                const part = buf[0..8];
+                std.mem.writeInt(u64, part, @truncate(u64, encoded), endianess);
+                return part;
+            },
+            else => return buf[0..0],
+        }
     }
 
     pub fn decode(pf: PixelFormat, encoded: []const u8) Color {
@@ -353,9 +520,9 @@ pub const PixelFormat = struct {
 };
 
 pub const Color = struct {
-    r: u8,
-    g: u8,
-    b: u8,
+    r: f32,
+    g: f32,
+    b: f32,
 };
 
 pub const Security = enum(u8) {
