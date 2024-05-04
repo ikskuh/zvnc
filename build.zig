@@ -1,7 +1,5 @@
 const std = @import("std");
 
-const SdlSdk = @import("vendor/sdl/Sdk.zig");
-
 pub fn build(b: *std.build.Builder) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
@@ -41,7 +39,7 @@ pub fn build(b: *std.build.Builder) void {
     run_client_step.dependOn(&run_client_cmd.step);
 
     const exe_tests = b.addTest(.{
-        .root_source_file = .{ .path = "src/main.zig" },
+        .root_source_file = .{ .path = "src/vnc.zig" },
         .target = target,
         .optimize = optimize,
     });

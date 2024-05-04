@@ -44,10 +44,10 @@ pub fn main() anyerror!void {
                 while (y < req.height) : (y += 1) {
                     var x: usize = 0;
                     while (x < req.width) : (x += 1) {
-                        var px = x + req.x;
-                        var py = y + req.y;
+                        const px = x + req.x;
+                        const py = y + req.y;
 
-                        var c = vnc.Color{
+                        const c: vnc.Color = .{
                             .r = @as(f32, @floatFromInt(px)) / 319.0,
                             .g = @as(f32, @floatFromInt(py)) / 239.0,
                             .b = @mod(delta, 1.0),
