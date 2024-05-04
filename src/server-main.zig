@@ -1,6 +1,8 @@
 const std = @import("std");
 const network = @import("network");
 
+const vnc = @import("vnc.zig");
+
 pub fn main() anyerror!void {
     var server_sock = try network.Socket.create(.ipv4, .tcp);
     defer server_sock.close();
@@ -12,7 +14,7 @@ pub fn main() anyerror!void {
 
     std.debug.print("waiting for client...\n", .{});
 
-    var client = try server_sock.accept();
+    const client = try server_sock.accept();
 
     var server = try Server.open(std.heap.page_allocator, client, .{
         .screen_width = 320,
@@ -36,7 +38,7 @@ pub fn main() anyerror!void {
 
                 const now = std.time.nanoTimestamp();
 
-                const delta = @intToFloat(f32, now - start) / std.time.ns_per_s;
+                const delta = @as(f32, @floatFromInt(now - start)) / std.time.ns_per_s;
 
                 var y: usize = 0;
                 while (y < req.height) : (y += 1) {
@@ -45,9 +47,9 @@ pub fn main() anyerror!void {
                         var px = x + req.x;
                         var py = y + req.y;
 
-                        var c = Color{
-                            .r = @intToFloat(f32, px) / 319.0,
-                            .g = @intToFloat(f32, py) / 239.0,
+                        var c = vnc.Color{
+                            .r = @as(f32, @floatFromInt(px)) / 319.0,
+                            .g = @as(f32, @floatFromInt(py)) / 239.0,
                             .b = @mod(delta, 1.0),
                         };
 
@@ -70,7 +72,7 @@ pub fn main() anyerror!void {
             },
 
             .key_event => |ev| {
-                if (ev.key == @intToEnum(Key, ' ')) {
+                if (ev.key == @as(vnc.Key, @enumFromInt(' '))) {
                     try server.sendBell();
                 } else if (ev.key == .@"return") {
                     try server.sendServerCutText("HELLO, WORLD!");
@@ -81,11 +83,6 @@ pub fn main() anyerror!void {
         }
     }
 }
-
-const ProtocolVersion = struct {
-    major: u8,
-    minor: u8,
-};
 
 pub const ServerProperties = struct {
     desktop_name: []const u8,
@@ -99,14 +96,14 @@ const Server = struct {
 
     // public api:
 
-    protocol_version: ProtocolVersion,
+    protocol_version: vnc.ProtocolVersion,
     shared_connection: bool,
-    pixel_format: PixelFormat,
+    pixel_format: vnc.PixelFormat,
 
     pub fn open(allocator: std.mem.Allocator, sock: network.Socket, properties: ServerProperties) !Server {
         errdefer sock.close();
 
-        const desktop_name_len = try std.math.cast(u32, properties.desktop_name.len);
+        const desktop_name_len =  std.math.cast(u32, properties.desktop_name.len) orelse return error.Overflow;
 
         var writer = sock.writer();
         var reader = sock.reader();
@@ -118,25 +115,15 @@ const Server = struct {
             var handshake: [12]u8 = undefined;
             try reader.readNoEof(&handshake);
 
-            if (!std.mem.eql(u8, handshake[0..4], "RFB "))
-                return error.ProtocolMismatch;
-            if (handshake[7] != '.')
-                return error.ProtocolMismatch;
-            if (handshake[11] != '\n')
-                return error.ProtocolMismatch;
-
-            const major_version = std.fmt.parseInt(u8, handshake[4..7], 10) catch return error.ProtocolMismatch;
-            const minor_version = std.fmt.parseInt(u8, handshake[8..11], 10) catch return error.ProtocolMismatch;
-
-            break :blk ProtocolVersion{ .major = major_version, .minor = minor_version };
+            break :blk try vnc.ProtocolVersion.parse(handshake);
         };
 
         // Security handshake. We are insecure.
         {
             try writer.writeByte(1); // number of types
-            try writer.writeByte(@enumToInt(Security.none)); // "no security"
+            try writer.writeByte(@intFromEnum(vnc.Security.none)); // "no security"
 
-            const selected_security = std.meta.intToEnum(Security, try reader.readByte()) catch return error.ProtocolMismatch;
+            const selected_security = std.meta.intToEnum(vnc.Security, try reader.readByte()) catch return error.ProtocolMismatch;
 
             std.debug.print("client security: {}\n", .{selected_security});
 
@@ -178,7 +165,7 @@ const Server = struct {
             }
         }
 
-        var pixel_format = PixelFormat.bgrx8888;
+        var pixel_format = vnc.PixelFormat.bgrx8888;
 
         // Initialization phase
         const shared_connection = blk: {
@@ -218,13 +205,13 @@ const Server = struct {
             else => |e| return e,
         };
 
-        const message_type = std.meta.intToEnum(ClientMessageType, message_byte) catch return error.ProtocolViolation;
+        const message_type = std.meta.intToEnum(vnc.ClientMessageType, message_byte) catch return error.ProtocolViolation;
         switch (message_type) {
             .set_pixel_format => {
                 var padding: [3]u8 = undefined;
                 try reader.readNoEof(&padding);
 
-                const pf = try PixelFormat.deserialize(reader);
+                const pf = try vnc.PixelFormat.deserialize(reader);
                 self.pixel_format = pf; // update the current pixel format
                 return ClientEvent{ .set_pixel_format = pf };
             },
@@ -234,13 +221,13 @@ const Server = struct {
 
                 const num_encodings = try reader.readIntBig(u16);
 
-                try self.temp_memory.resize(@sizeOf(Encoding) * num_encodings);
+                try self.temp_memory.resize(@sizeOf(vnc.Encoding) * num_encodings);
 
-                const encodings = @ptrCast([*]Encoding, self.temp_memory.items.ptr)[0..num_encodings];
+                const encodings = @as([*]vnc.Encoding, @ptrCast(self.temp_memory.items.ptr))[0..num_encodings];
 
                 var i: usize = 0;
                 while (i < num_encodings) : (i += 1) {
-                    encodings[i] = @intToEnum(Encoding, try reader.readIntBig(i32));
+                    encodings[i] = @as(vnc.Encoding, @enumFromInt(try reader.readIntBig(i32)));
                 }
 
                 return ClientEvent{ .set_encodings = encodings };
@@ -268,7 +255,7 @@ const Server = struct {
                 var padding: [2]u8 = undefined;
                 try reader.readNoEof(&padding);
 
-                const key = @intToEnum(Key, try reader.readIntBig(u32));
+                const key = @as(vnc.Key, @enumFromInt(try reader.readIntBig(u32)));
 
                 return ClientEvent{
                     .key_event = .{ .key = key, .down = (down_flag != 0) },
@@ -313,11 +300,11 @@ const Server = struct {
     }
 
     pub fn sendFramebufferUpdate(self: *Server, rectangles: []const UpdateRectangle) !void {
-        const num_rects = try std.math.cast(u16, rectangles.len);
+        const num_rects =  std.math.cast(u16, rectangles.len) orelse return error.Overflow;
 
         var buffered_writer = std.io.bufferedWriter(self.socket.writer());
         const writer = buffered_writer.writer();
-        try writer.writeByte(@enumToInt(ServerMessageType.framebuffer_update));
+        try writer.writeByte(@intFromEnum(vnc.ServerMessageType.framebuffer_update));
         try writer.writeByte(0); // padding
 
         try writer.writeIntBig(u16, num_rects);
@@ -327,7 +314,7 @@ const Server = struct {
             try writer.writeIntBig(u16, rect.y);
             try writer.writeIntBig(u16, rect.width);
             try writer.writeIntBig(u16, rect.height);
-            try writer.writeIntBig(i32, @enumToInt(rect.encoding));
+            try writer.writeIntBig(i32, @intFromEnum(rect.encoding));
             try writer.writeAll(rect.data);
         }
 
@@ -337,36 +324,36 @@ const Server = struct {
     /// Changes entries in the clients color map.
     /// - `first` is the first color entry to change.
     /// - `colors` is a slice of colors that will be written to the client color map at the offset `first`.
-    pub fn sendSetColorMapEntries(self: *Server, first: u16, colors: []const Color) !void {
+    pub fn sendSetColorMapEntries(self: *Server, first: u16, colors: []const vnc.Color) !void {
         const color_count = try std.math.cast(u16, colors.len);
 
         var writer = self.socket.writer();
-        try writer.writeByte(@enumToInt(ServerMessageType.set_color_map_entries));
+        try writer.writeByte(@intFromEnum(vnc.ServerMessageType.set_color_map_entries));
         try writer.writeByte(0); // padding
 
         try writer.writeIntBig(u16, first);
         try writer.writeIntBig(u16, color_count);
 
         for (colors) |c| {
-            try writer.writeIntBig(u16, @floatToInt(u16, std.math.maxInt(u16) * std.math.clamp(c.r, 0.0, 1.0)));
-            try writer.writeIntBig(u16, @floatToInt(u16, std.math.maxInt(u16) * std.math.clamp(c.g, 0.0, 1.0)));
-            try writer.writeIntBig(u16, @floatToInt(u16, std.math.maxInt(u16) * std.math.clamp(c.b, 0.0, 1.0)));
+            try writer.writeIntBig(u16, @as(u16, @intFromFloat(std.math.maxInt(u16) * std.math.clamp(c.r, 0.0, 1.0))));
+            try writer.writeIntBig(u16, @as(u16, @intFromFloat(std.math.maxInt(u16) * std.math.clamp(c.g, 0.0, 1.0))));
+            try writer.writeIntBig(u16, @as(u16, @intFromFloat(std.math.maxInt(u16) * std.math.clamp(c.b, 0.0, 1.0))));
         }
     }
 
     /// Rings a signal on the viewer if possible.
     pub fn sendBell(self: *Server) !void {
         var writer = self.socket.writer();
-        try writer.writeByte(@enumToInt(ServerMessageType.bell));
+        try writer.writeByte(@intFromEnum(vnc.ServerMessageType.bell));
     }
 
     /// Sets the new clipboard content of the viewer.
     /// - `text` is the ISO 8859-1 (Latin-1) encoded text.
     pub fn sendServerCutText(self: *Server, text: []const u8) !void {
-        const length = try std.math.cast(u32, text.len);
+        const length = std.math.cast(u32, text.len) orelse return error.Overflow;
 
         var writer = self.socket.writer();
-        try writer.writeByte(@enumToInt(ServerMessageType.server_cut_text));
+        try writer.writeByte(@intFromEnum(vnc.ServerMessageType.server_cut_text));
         try writer.writeByte(0); // padding
         try writer.writeByte(0); // padding
         try writer.writeByte(0); // padding
@@ -380,13 +367,13 @@ pub const UpdateRectangle = struct {
     y: u16,
     width: u16,
     height: u16,
-    encoding: Encoding,
+    encoding: vnc.Encoding,
     data: []const u8,
 };
 
-pub const ClientEvent = union(ClientMessageType) {
-    set_pixel_format: PixelFormat,
-    set_encodings: []const Encoding,
+pub const ClientEvent = union(vnc.ClientMessageType) {
+    set_pixel_format: vnc.PixelFormat,
+    set_encodings: []const vnc.Encoding,
     framebuffer_update_request: FramebufferUpdateRequest,
     key_event: KeyEvent,
     pointer_event: PointerEvent,
@@ -400,7 +387,7 @@ pub const ClientEvent = union(ClientMessageType) {
         height: u16,
     };
     pub const KeyEvent = struct {
-        key: Key,
+        key: vnc.Key,
         down: bool,
     };
     pub const PointerEvent = struct {
@@ -410,195 +397,15 @@ pub const ClientEvent = union(ClientMessageType) {
     };
 };
 
-pub const PixelFormat = struct {
-    pub const bgrx8888 = PixelFormat{
-        .bpp = 32,
-        .depth = 24,
-        .big_endian = 0,
-        .true_color = 1,
-        .red_max = 255,
-        .green_max = 255,
-        .blue_max = 255,
-        .red_shift = 16,
-        .green_shift = 8,
-        .blue_shift = 0,
-    };
-
-    bpp: u8,
-    depth: u8,
-    big_endian: u8,
-    true_color: u8,
-    red_max: u16,
-    green_max: u16,
-    blue_max: u16,
-    red_shift: u8,
-    green_shift: u8,
-    blue_shift: u8,
-
-    pub fn serialize(self: PixelFormat, writer: anytype) !void {
-        try writer.writeIntBig(u8, self.bpp);
-        try writer.writeIntBig(u8, self.depth);
-        try writer.writeIntBig(u8, self.big_endian);
-        try writer.writeIntBig(u8, self.true_color);
-        try writer.writeIntBig(u16, self.red_max);
-        try writer.writeIntBig(u16, self.green_max);
-        try writer.writeIntBig(u16, self.blue_max);
-        try writer.writeIntBig(u8, self.red_shift);
-        try writer.writeIntBig(u8, self.green_shift);
-        try writer.writeIntBig(u8, self.blue_shift);
-        try writer.writeAll("\x00\x00\x00"); // padding
-    }
-
-    pub fn deserialize(reader: anytype) !PixelFormat {
-        var pf = PixelFormat{
-            .bpp = try reader.readIntBig(u8),
-            .depth = try reader.readIntBig(u8),
-            .big_endian = try reader.readIntBig(u8),
-            .true_color = try reader.readIntBig(u8),
-            .red_max = try reader.readIntBig(u16),
-            .green_max = try reader.readIntBig(u16),
-            .blue_max = try reader.readIntBig(u16),
-            .red_shift = try reader.readIntBig(u8),
-            .green_shift = try reader.readIntBig(u8),
-            .blue_shift = try reader.readIntBig(u8),
-        };
-        var padding: [3]u8 = undefined;
-        try reader.readNoEof(&padding); // padding
-        return pf;
-    }
-
-    pub fn encode(pf: PixelFormat, buf: *[8]u8, color: Color) []u8 {
-        var encoded: u64 = 0;
-
-        if (pf.true_color != 0) {
-            encoded |= @floatToInt(u64, @intToFloat(f32, pf.red_max) * color.r) << @truncate(u6, pf.red_shift);
-            encoded |= @floatToInt(u64, @intToFloat(f32, pf.green_max) * color.g) << @truncate(u6, pf.green_shift);
-            encoded |= @floatToInt(u64, @intToFloat(f32, pf.blue_max) * color.b) << @truncate(u6, pf.blue_shift);
-        } else {
-            @panic("indexed color encoding not implemented yet");
-        }
-
-        const endianess = switch (pf.big_endian) {
-            0 => std.builtin.Endian.Little,
-            else => std.builtin.Endian.Big,
-        };
-
-        switch (pf.bpp) {
-            8 => {
-                const part = buf[0..1];
-                std.mem.writeInt(u8, part, @truncate(u8, encoded), endianess);
-                return part;
-            },
-            16 => {
-                const part = buf[0..2];
-                std.mem.writeInt(u16, part, @truncate(u16, encoded), endianess);
-                return part;
-            },
-            24 => {
-                const part = buf[0..3];
-                std.mem.writeInt(u24, part, @truncate(u24, encoded), endianess);
-                return part;
-            },
-            32 => {
-                const part = buf[0..4];
-                std.mem.writeInt(u32, part, @truncate(u32, encoded), endianess);
-                return part;
-            },
-            64 => {
-                const part = buf[0..8];
-                std.mem.writeInt(u64, part, @truncate(u64, encoded), endianess);
-                return part;
-            },
-            else => return buf[0..0],
-        }
-    }
-
-    pub fn decode(pf: PixelFormat, encoded: []const u8) Color {
-        _ = pf;
-        _ = encoded;
-    }
-};
-
-pub const Color = struct {
-    r: f32,
-    g: f32,
-    b: f32,
-};
-
-pub const Security = enum(u8) {
-    invalid = 0,
-    none = 1,
-    vnc_authentication = 2,
-};
-
-pub const ClientMessageType = enum(u8) {
-    set_pixel_format = 0,
-    set_encodings = 2,
-    framebuffer_update_request = 3,
-    key_event = 4,
-    pointer_event = 5,
-    client_cut_text = 6,
-};
-
-pub const ServerMessageType = enum(u8) {
-    framebuffer_update = 0,
-    set_color_map_entries = 1,
-    bell = 2,
-    server_cut_text = 3,
-};
-
-pub const Key = enum(u32) {
-
-    // For most ordinary keys, the keysym is the same as the corresponding
-    // ASCII value. For full details, see [XLIBREF] or see the header file
-    // <X11/keysymdef.h> in the X Window System distribution. Some other
-    // common keys are:
-    back_space = 0xff08,
-    tab = 0xff09,
-    @"return" = 0xff0d,
-    escape = 0xff1b,
-    insert = 0xff63,
-    delete = 0xffff,
-    home = 0xff50,
-    end = 0xff57,
-    page_up = 0xff55,
-    page_down = 0xff56,
-    left = 0xff51,
-    up = 0xff52,
-    right = 0xff53,
-    down = 0xff54,
-    f1 = 0xffbe,
-    f2 = 0xffbf,
-    f3 = 0xffc0,
-    f4 = 0xffc1,
-    f5 = 0xffc2,
-    f6 = 0xffc3,
-    f7 = 0xffc4,
-    f8 = 0xffc5,
-    f9 = 0xffc6,
-    f10 = 0xffc7,
-    f11 = 0xffc8,
-    f12 = 0xffc9,
-    shift_left = 0xffe1,
-    shift_right = 0xffe2,
-    control_left = 0xffe3,
-    control_right = 0xffe4,
-    meta_left = 0xffe7,
-    meta_right = 0xffe8,
-    alt_left = 0xffe9,
-    alt_right = 0xffea,
-
-    _,
-};
-
-pub const Encoding = enum(i32) {
-    raw = 0,
-    copy_rect = 1,
-    rre = 2,
-    hextile = 5,
-    trle = 15,
-    zrle = 16,
-    cursor_pseudo_encoding = -239,
-    desktop_size_pseudo_encoding = -223,
-    _,
-};
+// pub fn encodeRectangle(framebuffer: anytype, encoding: Encoding, writer: anytype) !void {
+//     switch (encoding) {
+//         .raw => {},
+//         .copy_rect => {},
+//         .rre => {},
+//         .hextile => {},
+//         .trle => {},
+//         .zrle => {},
+//         .cursor_pseudo_encoding => return error.UnsupportedEncoding,
+//         .desktop_size_pseudo_encoding => return error.UnsupportedEncoding,
+//     }
+// }

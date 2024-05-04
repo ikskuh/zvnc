@@ -1,0 +1,10 @@
+.{
+    .name = "zvnc",
+    .version = "0.0.0",
+    .dependencies = .{
+        .network = .{
+            .url = "https://github.com/MasterQ32/zig-network/archive/cdff53a2527598112a02b442045d4aef39a2e5e2.tar.gz",
+            .hash = "1220509b2da888b2d1ea452ed9d384134a754a940d1dc3865c87da7d224b89912b3d",
+        },
+    },
+}

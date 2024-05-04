@@ -1,42 +1,51 @@
 const std = @import("std");
 
-const pkgs = struct {
-    pub const network = std.build.Pkg{
-        .name = "network",
-        .path = .{ .path = "vendor/network/network.zig" },
-    };
-};
+const SdlSdk = @import("vendor/sdl/Sdk.zig");
 
 pub fn build(b: *std.build.Builder) void {
-    // Standard target options allows the person running `zig build` to choose
-    // what target to build for. Here we do not override the defaults, which
-    // means any target is allowed, and the default is native. Other options
-    // for restricting supported target set are available.
     const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
 
-    // Standard release options allow the person running `zig build` to select
-    // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
-    const mode = b.standardReleaseOptions();
+    const network_dep = b.dependency("network", .{});
+    const network_mod = network_dep.module("network");
 
-    const exe = b.addExecutable("zvnc", "src/main.zig");
-    exe.setTarget(target);
-    exe.setBuildMode(mode);
-    exe.addPackage(pkgs.network);
-    exe.install();
+    const client_exe = b.addExecutable(.{
+        .name = "zvnc-client",
+        .root_source_file = .{ .path = "src/client-main.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    client_exe.addModule("network", network_mod);
+    b.installArtifact(client_exe);
 
-    const run_cmd = exe.run();
-    run_cmd.step.dependOn(b.getInstallStep());
+    const server_exe = b.addExecutable(.{
+        .name = "zvnc-server",
+        .root_source_file = .{ .path = "src/server-main.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    server_exe.addModule("network", network_mod);
+    b.installArtifact(server_exe);
+
+    const run_client_cmd = b.addRunArtifact(client_exe);
     if (b.args) |args| {
-        run_cmd.addArgs(args);
+        run_client_cmd.addArgs(args);
     }
 
-    const run_step = b.step("run", "Run the app");
-    run_step.dependOn(&run_cmd.step);
+    const run_server_cmd = b.addRunArtifact(server_exe);
 
-    const exe_tests = b.addTest("src/main.zig");
-    exe_tests.setTarget(target);
-    exe_tests.setBuildMode(mode);
+    const run_server_step = b.step("run-server", "Run the app");
+    run_server_step.dependOn(&run_server_cmd.step);
+
+    const run_client_step = b.step("run-client", "Run the app");
+    run_client_step.dependOn(&run_client_cmd.step);
+
+    const exe_tests = b.addTest(.{
+        .root_source_file = .{ .path = "src/main.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
 
     const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&exe_tests.step);
+    test_step.dependOn(&b.addRunArtifact(exe_tests).step);
 }
