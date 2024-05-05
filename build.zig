@@ -7,6 +7,13 @@ pub fn build(b: *std.build.Builder) void {
     const network_dep = b.dependency("network", .{});
     const network_mod = network_dep.module("network");
 
+    const vnc_mod = b.addModule("vnc", .{
+        .source_file = .{ .path = "src/vnc.zig" },
+        .dependencies = &.{
+            .{ .name = "network", .module = network_mod },
+        },
+    });
+
     const client_exe = b.addExecutable(.{
         .name = "zvnc-client",
         .root_source_file = .{ .path = "src/client-main.zig" },
@@ -14,6 +21,7 @@ pub fn build(b: *std.build.Builder) void {
         .optimize = optimize,
     });
     client_exe.addModule("network", network_mod);
+    client_exe.addModule("vnc", vnc_mod);
     b.installArtifact(client_exe);
 
     const server_exe = b.addExecutable(.{
@@ -23,6 +31,7 @@ pub fn build(b: *std.build.Builder) void {
         .optimize = optimize,
     });
     server_exe.addModule("network", network_mod);
+    server_exe.addModule("vnc", vnc_mod);
     b.installArtifact(server_exe);
 
     const run_client_cmd = b.addRunArtifact(client_exe);

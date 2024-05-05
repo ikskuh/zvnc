@@ -1,7 +1,7 @@
 const std = @import("std");
 const network = @import("network");
 
-const vnc = @import("vnc.zig");
+const vnc = @import("vnc");
 
 pub fn main() anyerror!void {
     var server_sock = try network.Socket.create(.ipv4, .tcp);

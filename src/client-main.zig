@@ -1,7 +1,7 @@
 const std = @import("std");
 const network = @import("network");
 
-const vnc = @import("vnc.zig");
+const vnc = @import("vnc");
 
 pub fn main() !u8 {
     var socket = try network.connectToHost(std.heap.page_allocator, "localhost", 5900, .tcp);
