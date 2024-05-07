@@ -1,3 +1,8 @@
+//!
+//! Links:
+//! - https://datatracker.ietf.org/doc/html/rfc6143
+//! - https://en.wikipedia.org/wiki/RFB_protocol
+//!
 const std = @import("std");
 const network = @import("network");
 
@@ -103,6 +108,9 @@ pub const Encoding = enum(i32) {
     _,
 };
 
+/// RFB pixel format / color encoding.
+///
+/// See also: https://datatracker.ietf.org/doc/html/rfc6143#section-7.4
 pub const PixelFormat = struct {
     pub const bgrx8888 = PixelFormat{
         .bpp = 32,
@@ -117,13 +125,25 @@ pub const PixelFormat = struct {
         .blue_shift = 0,
     };
 
+    /// Bits-per-pixel is the number of bits used for each pixel value on the
+    /// wire. This must be greater than or equal to the depth.
     bpp: u8,
+
+    /// The number of useful bits in the pixel value. Currently bits-per-pixel must be 8, 16, or 32.
     depth: u8,
+
+    /// Big-endian-flag is non-zero (true) if multi- byte pixels are interpreted as big endian.
     big_endian: u8,
+
+    /// If true-color-flag is non-zero (true), then the last six items
+    /// specify how to extract the red, green, and blue intensities from the
+    /// pixel value.
     true_color: u8,
+    // Red-max is the maximum red value and must be 2^N - 1, where N is the number of bits used for red.
     red_max: u16,
     green_max: u16,
     blue_max: u16,
+    /// Red-shift is the number of shifts needed to get the red value in a pixel to the least significant bit.
     red_shift: u8,
     green_shift: u8,
     blue_shift: u8,
@@ -210,12 +230,36 @@ pub const PixelFormat = struct {
         _ = pf;
         _ = encoded;
     }
+
+    pub fn format(pf: PixelFormat, fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+        try writer.print(
+            \\PixelFormat({} bpp, {} )
+        , .{
+            pf.bpp,
+            pf.depth,
+            pf.big_endian,
+            pf.true_color,
+            pf.red_max,
+            pf.green_max,
+            pf.blue_max,
+            pf.red_shift,
+            pf.green_shift,
+            pf.blue_shift,
+        });
+    }
 };
 
 pub const ServerProperties = struct {
+    /// The name of the desktop served by this server.
     desktop_name: []const u8,
+
     screen_width: u16,
     screen_height: u16,
+
+    /// Server-pixel-format specifies the server's natural pixel format.
+    /// This pixel format will be used unless the client requests a different
+    /// format using the SetPixelFormat message (Section 7.5.1).
+    pixel_format: PixelFormat = .bgrx8888,
 };
 
 pub const Server = struct {
@@ -293,15 +337,13 @@ pub const Server = struct {
             }
         }
 
-        var pixel_format = PixelFormat.bgrx8888;
-
         // Initialization phase
         const shared_connection = blk: {
             const shared_flag = try reader.readByte(); // 0 => disconnect others, 1 => share with others
 
             try writer.writeIntBig(u16, properties.screen_width); // width
             try writer.writeIntBig(u16, properties.screen_height); // height
-            try pixel_format.serialize(writer); // pixel format, 16 byte
+            try properties.pixel_format.serialize(writer); // pixel format, 16 byte
 
             try writer.writeIntBig(u32, desktop_name_len); // virtual desktop name len
             try writer.writeAll(properties.desktop_name); // virtual desktop name bytes
@@ -315,7 +357,7 @@ pub const Server = struct {
 
             .protocol_version = protocol_version,
             .shared_connection = shared_connection,
-            .pixel_format = pixel_format,
+            .pixel_format = properties.pixel_format,
         };
     }
 
@@ -490,6 +532,7 @@ pub const Server = struct {
     }
 };
 
+/// https://datatracker.ietf.org/doc/html/rfc6143#section-7.6.1
 pub const UpdateRectangle = struct {
     x: u16,
     y: u16,
@@ -500,13 +543,51 @@ pub const UpdateRectangle = struct {
 };
 
 pub const ClientEvent = union(ClientMessageType) {
+    /// https://datatracker.ietf.org/doc/html/rfc6143#section-7.5.1
     set_pixel_format: PixelFormat,
+
+    /// https://datatracker.ietf.org/doc/html/rfc6143#section-7.5.2
     set_encodings: []const Encoding,
+
+    /// https://datatracker.ietf.org/doc/html/rfc6143#section-7.5.3
     framebuffer_update_request: FramebufferUpdateRequest,
+
+    /// https://datatracker.ietf.org/doc/html/rfc6143#section-7.5.4
     key_event: KeyEvent,
+
+    /// https://datatracker.ietf.org/doc/html/rfc6143#section-7.5.5
     pointer_event: PointerEvent,
+
+    /// https://datatracker.ietf.org/doc/html/rfc6143#section-7.5.6
     client_cut_text: []const u8,
 
+    /// A FramebufferUpdateRequest message notifies the server that the
+    /// client is interested in the area of the framebuffer specified by
+    /// x-position, y-position, width, and height. The server usually
+    /// responds to a FramebufferUpdateRequest by sending a
+    /// FramebufferUpdate. A single FramebufferUpdate may be sent in reply
+    /// to several FramebufferUpdateRequests.
+    ///
+    /// The server assumes that the client keeps a copy of all parts of the
+    /// framebuffer in which it is interested.  This means that normally the
+    /// server only needs to send incremental updates to the client.
+    ///
+    /// If the client has lost the contents of a particular area that it
+    /// needs, then the client sends a FramebufferUpdateRequest with
+    /// incremental set to zero (false).  This requests that the server send
+    /// the entire contents of the specified area as soon as possible.  The
+    /// area will not be updated using the CopyRect encoding.
+    ///
+    /// If the client has not lost any contents of the area in which it is
+    /// interested, then it sends a FramebufferUpdateRequest with incremental
+    /// set to non-zero (true). If and when there are changes to the
+    /// specified area of the framebuffer, the server will send a
+    /// FramebufferUpdate.  Note that there may be an indefinite period
+    /// between the FramebufferUpdateRequest and the FramebufferUpdate.
+    ///
+    /// In the case of a fast client, the client may want to regulate the
+    /// rate at which it sends incremental FramebufferUpdateRequests to avoid
+    /// excessive network traffic.
     pub const FramebufferUpdateRequest = struct {
         incremental: bool,
         x: u16,
@@ -514,10 +595,12 @@ pub const ClientEvent = union(ClientMessageType) {
         width: u16,
         height: u16,
     };
+
     pub const KeyEvent = struct {
         key: Key,
         down: bool,
     };
+
     pub const PointerEvent = struct {
         x: u16,
         y: u16,
