@@ -149,31 +149,31 @@ pub const PixelFormat = struct {
     blue_shift: u8,
 
     pub fn serialize(self: PixelFormat, writer: anytype) !void {
-        try writer.writeIntBig(u8, self.bpp);
-        try writer.writeIntBig(u8, self.depth);
-        try writer.writeIntBig(u8, self.big_endian);
-        try writer.writeIntBig(u8, self.true_color);
-        try writer.writeIntBig(u16, self.red_max);
-        try writer.writeIntBig(u16, self.green_max);
-        try writer.writeIntBig(u16, self.blue_max);
-        try writer.writeIntBig(u8, self.red_shift);
-        try writer.writeIntBig(u8, self.green_shift);
-        try writer.writeIntBig(u8, self.blue_shift);
+        try writer.writeInt(u8, self.bpp, .big);
+        try writer.writeInt(u8, self.depth, .big);
+        try writer.writeInt(u8, self.big_endian, .big);
+        try writer.writeInt(u8, self.true_color, .big);
+        try writer.writeInt(u16, self.red_max, .big);
+        try writer.writeInt(u16, self.green_max, .big);
+        try writer.writeInt(u16, self.blue_max, .big);
+        try writer.writeInt(u8, self.red_shift, .big);
+        try writer.writeInt(u8, self.green_shift, .big);
+        try writer.writeInt(u8, self.blue_shift, .big);
         try writer.writeAll("\x00\x00\x00"); // padding
     }
 
     pub fn deserialize(reader: anytype) !PixelFormat {
-        var pf = PixelFormat{
-            .bpp = try reader.readIntBig(u8),
-            .depth = try reader.readIntBig(u8),
-            .big_endian = try reader.readIntBig(u8),
-            .true_color = try reader.readIntBig(u8),
-            .red_max = try reader.readIntBig(u16),
-            .green_max = try reader.readIntBig(u16),
-            .blue_max = try reader.readIntBig(u16),
-            .red_shift = try reader.readIntBig(u8),
-            .green_shift = try reader.readIntBig(u8),
-            .blue_shift = try reader.readIntBig(u8),
+        const pf = PixelFormat{
+            .bpp = try reader.readInt(u8, .big),
+            .depth = try reader.readInt(u8, .big),
+            .big_endian = try reader.readInt(u8, .big),
+            .true_color = try reader.readInt(u8, .big),
+            .red_max = try reader.readInt(u16, .big),
+            .green_max = try reader.readInt(u16, .big),
+            .blue_max = try reader.readInt(u16, .big),
+            .red_shift = try reader.readInt(u8, .big),
+            .green_shift = try reader.readInt(u8, .big),
+            .blue_shift = try reader.readInt(u8, .big),
         };
         var padding: [3]u8 = undefined;
         try reader.readNoEof(&padding); // padding
@@ -191,9 +191,9 @@ pub const PixelFormat = struct {
             @panic("indexed color encoding not implemented yet");
         }
 
-        const endianess = switch (pf.big_endian) {
-            0 => std.builtin.Endian.Little,
-            else => std.builtin.Endian.Big,
+        const endianess: std.builtin.Endian = switch (pf.big_endian) {
+            0 => .little,
+            else => .big,
         };
 
         switch (pf.bpp) {
@@ -232,19 +232,21 @@ pub const PixelFormat = struct {
     }
 
     pub fn format(pf: PixelFormat, fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+        _ = fmt;
+        _ = options;
         try writer.print(
             \\PixelFormat({} bpp, {} )
         , .{
             pf.bpp,
             pf.depth,
-            pf.big_endian,
-            pf.true_color,
-            pf.red_max,
-            pf.green_max,
-            pf.blue_max,
-            pf.red_shift,
-            pf.green_shift,
-            pf.blue_shift,
+            // pf.big_endian,
+            // pf.true_color,
+            // pf.red_max,
+            // pf.green_max,
+            // pf.blue_max,
+            // pf.red_shift,
+            // pf.green_shift,
+            // pf.blue_shift,
         });
     }
 };
@@ -259,7 +261,7 @@ pub const ServerProperties = struct {
     /// Server-pixel-format specifies the server's natural pixel format.
     /// This pixel format will be used unless the client requests a different
     /// format using the SetPixelFormat message (Section 7.5.1).
-    pixel_format: PixelFormat = .bgrx8888,
+    pixel_format: PixelFormat = PixelFormat.bgrx8888,
 };
 
 pub const Server = struct {
@@ -322,13 +324,13 @@ pub const Server = struct {
             };
 
             if (authentication_good) {
-                try writer.writeIntBig(u32, 0); // handshake OK
+                try writer.writeInt(u32, 0, .big); // handshake OK
             } else {
-                try writer.writeIntBig(u32, 1); // handshake failed
+                try writer.writeInt(u32, 1, .big); // handshake failed
 
                 const error_message = "Hello World!";
 
-                try writer.writeIntBig(u32, error_message.len);
+                try writer.writeInt(u32, error_message.len, .big);
                 try writer.writeAll(error_message);
 
                 // We failed to handle the client connection, but
@@ -341,11 +343,11 @@ pub const Server = struct {
         const shared_connection = blk: {
             const shared_flag = try reader.readByte(); // 0 => disconnect others, 1 => share with others
 
-            try writer.writeIntBig(u16, properties.screen_width); // width
-            try writer.writeIntBig(u16, properties.screen_height); // height
+            try writer.writeInt(u16, properties.screen_width, .big); // width
+            try writer.writeInt(u16, properties.screen_height, .big); // height
             try properties.pixel_format.serialize(writer); // pixel format, 16 byte
 
-            try writer.writeIntBig(u32, desktop_name_len); // virtual desktop name len
+            try writer.writeInt(u32, desktop_name_len, .big); // virtual desktop name len
             try writer.writeAll(properties.desktop_name); // virtual desktop name bytes
 
             break :blk (shared_flag != 0);
@@ -389,7 +391,7 @@ pub const Server = struct {
                 var padding: [1]u8 = undefined;
                 try reader.readNoEof(&padding);
 
-                const num_encodings = try reader.readIntBig(u16);
+                const num_encodings = try reader.readInt(u16, .big);
 
                 try self.temp_memory.resize(@sizeOf(Encoding) * num_encodings);
 
@@ -397,17 +399,17 @@ pub const Server = struct {
 
                 var i: usize = 0;
                 while (i < num_encodings) : (i += 1) {
-                    encodings[i] = @as(Encoding, @enumFromInt(try reader.readIntBig(i32)));
+                    encodings[i] = @as(Encoding, @enumFromInt(try reader.readInt(i32, .big)));
                 }
 
                 return ClientEvent{ .set_encodings = encodings };
             },
             .framebuffer_update_request => {
                 const incremental = try reader.readByte();
-                const x_pos = try reader.readIntBig(u16);
-                const y_pos = try reader.readIntBig(u16);
-                const width = try reader.readIntBig(u16);
-                const height = try reader.readIntBig(u16);
+                const x_pos = try reader.readInt(u16, .big);
+                const y_pos = try reader.readInt(u16, .big);
+                const width = try reader.readInt(u16, .big);
+                const height = try reader.readInt(u16, .big);
 
                 return ClientEvent{
                     .framebuffer_update_request = .{
@@ -425,7 +427,7 @@ pub const Server = struct {
                 var padding: [2]u8 = undefined;
                 try reader.readNoEof(&padding);
 
-                const key = @as(Key, @enumFromInt(try reader.readIntBig(u32)));
+                const key: Key = @enumFromInt(try reader.readInt(u32, .big));
 
                 return ClientEvent{
                     .key_event = .{ .key = key, .down = (down_flag != 0) },
@@ -433,8 +435,8 @@ pub const Server = struct {
             },
             .pointer_event => {
                 const button_mask = try reader.readByte();
-                const x_pos = try reader.readIntBig(u16);
-                const y_pos = try reader.readIntBig(u16);
+                const x_pos = try reader.readInt(u16, .big);
+                const y_pos = try reader.readInt(u16, .big);
 
                 return ClientEvent{
                     .pointer_event = .{ .x = x_pos, .y = y_pos, .buttons = button_mask },
@@ -444,7 +446,7 @@ pub const Server = struct {
                 var padding: [3]u8 = undefined;
                 try reader.readNoEof(&padding);
 
-                const msg_length = try reader.readIntBig(u32);
+                const msg_length = try reader.readInt(u32, .big);
 
                 try self.temp_memory.resize(msg_length);
 
@@ -477,14 +479,14 @@ pub const Server = struct {
         try writer.writeByte(@intFromEnum(ServerMessageType.framebuffer_update));
         try writer.writeByte(0); // padding
 
-        try writer.writeIntBig(u16, num_rects);
+        try writer.writeInt(u16, num_rects, .big);
 
         for (rectangles) |rect| {
-            try writer.writeIntBig(u16, rect.x);
-            try writer.writeIntBig(u16, rect.y);
-            try writer.writeIntBig(u16, rect.width);
-            try writer.writeIntBig(u16, rect.height);
-            try writer.writeIntBig(i32, @intFromEnum(rect.encoding));
+            try writer.writeInt(u16, rect.x, .big);
+            try writer.writeInt(u16, rect.y, .big);
+            try writer.writeInt(u16, rect.width, .big);
+            try writer.writeInt(u16, rect.height, .big);
+            try writer.writeInt(i32, @intFromEnum(rect.encoding), .big);
             try writer.writeAll(rect.data);
         }
 
@@ -501,13 +503,13 @@ pub const Server = struct {
         try writer.writeByte(@intFromEnum(ServerMessageType.set_color_map_entries));
         try writer.writeByte(0); // padding
 
-        try writer.writeIntBig(u16, first);
-        try writer.writeIntBig(u16, color_count);
+        try writer.writeInt(u16, first, .big);
+        try writer.writeInt(u16, color_count, .big);
 
         for (colors) |c| {
-            try writer.writeIntBig(u16, @as(u16, @intFromFloat(std.math.maxInt(u16) * std.math.clamp(c.r, 0.0, 1.0))));
-            try writer.writeIntBig(u16, @as(u16, @intFromFloat(std.math.maxInt(u16) * std.math.clamp(c.g, 0.0, 1.0))));
-            try writer.writeIntBig(u16, @as(u16, @intFromFloat(std.math.maxInt(u16) * std.math.clamp(c.b, 0.0, 1.0))));
+            try writer.writeInt(u16, @intFromFloat(std.math.maxInt(u16) * std.math.clamp(c.r, 0.0, 1.0)), .big);
+            try writer.writeInt(u16, @intFromFloat(std.math.maxInt(u16) * std.math.clamp(c.g, 0.0, 1.0)), .big);
+            try writer.writeInt(u16, @intFromFloat(std.math.maxInt(u16) * std.math.clamp(c.b, 0.0, 1.0)), .big);
         }
     }
 
@@ -527,7 +529,7 @@ pub const Server = struct {
         try writer.writeByte(0); // padding
         try writer.writeByte(0); // padding
         try writer.writeByte(0); // padding
-        try writer.writeIntBig(u32, length);
+        try writer.writeInt(u32, length, .big);
         try writer.writeAll(text);
     }
 };
