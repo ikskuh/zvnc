@@ -1,5 +1,5 @@
 {
-  description = "An empty project that uses Zig.";
+  description = "Zig VNC server implementation.";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-23.11";
@@ -28,7 +28,7 @@
         pkgs = import nixpkgs {inherit overlays system;};
       in rec {
         devShells.default = pkgs.mkShell {
-          nativeBuildInputs = [pkgs.zigpkgs."0.11.0"];
+          nativeBuildInputs = [pkgs.zigpkgs."0.13.0"];
         };
 
         # For compatibility with older versions of the `nix` binary
