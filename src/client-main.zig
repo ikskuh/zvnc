@@ -4,6 +4,9 @@ const network = @import("network");
 const vnc = @import("vnc");
 
 pub fn main() !u8 {
+    try network.init();
+    defer network.deinit();
+
     var socket = try network.connectToHost(std.heap.page_allocator, "localhost", 5900, .tcp);
     defer socket.close();
 

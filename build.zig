@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub fn build(b: *std.build.Builder) void {
+pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
 
@@ -8,30 +8,28 @@ pub fn build(b: *std.build.Builder) void {
     const network_mod = network_dep.module("network");
 
     const vnc_mod = b.addModule("vnc", .{
-        .source_file = .{ .path = "src/vnc.zig" },
-        .dependencies = &.{
-            .{ .name = "network", .module = network_mod },
-        },
+        .root_source_file = b.path("src/vnc.zig"),
     });
+    vnc_mod.addImport("network", network_mod);
 
     const client_exe = b.addExecutable(.{
         .name = "zvnc-client",
-        .root_source_file = .{ .path = "src/client-main.zig" },
+        .root_source_file = b.path("src/client-main.zig"),
         .target = target,
         .optimize = optimize,
     });
-    client_exe.addModule("network", network_mod);
-    client_exe.addModule("vnc", vnc_mod);
+    client_exe.root_module.addImport("network", network_mod);
+    client_exe.root_module.addImport("vnc", vnc_mod);
     b.installArtifact(client_exe);
 
     const server_exe = b.addExecutable(.{
         .name = "zvnc-server",
-        .root_source_file = .{ .path = "src/server-main.zig" },
+        .root_source_file = b.path("src/server-main.zig"),
         .target = target,
         .optimize = optimize,
     });
-    server_exe.addModule("network", network_mod);
-    server_exe.addModule("vnc", vnc_mod);
+    server_exe.root_module.addImport("network", network_mod);
+    server_exe.root_module.addImport("vnc", vnc_mod);
     b.installArtifact(server_exe);
 
     const run_client_cmd = b.addRunArtifact(client_exe);
@@ -48,7 +46,7 @@ pub fn build(b: *std.build.Builder) void {
     run_client_step.dependOn(&run_client_cmd.step);
 
     const exe_tests = b.addTest(.{
-        .root_source_file = .{ .path = "src/vnc.zig" },
+        .root_source_file = b.path("src/vnc.zig"),
         .target = target,
         .optimize = optimize,
     });
