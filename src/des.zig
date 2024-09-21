@@ -17,10 +17,12 @@ pub fn init_decrypt(key: u64, subkeys: *[16]u48) void {
 pub fn process_8bytes(block: *[8]u8, subkeys: *const [16]u48) void {
     const block_as_int: u64 = std.mem.readInt(u64, block, .big);
     var out: u64 = 0;
-    for (&IP_u6, 0..64) |p_u6, i| {
-        out |= @intCast(((@as(u64, @as(u64, 1) << p_u6) & block_as_int) >> p_u6) << @intCast(63 - i));
+    for (0..64) |i| {
+        const col = i & 0x7;
+        const row = i >> 3;
+        const IP_from_64:u6 = @intCast(IP_first_col[row] + (col * 8));  // = 63 - (IP - 1)
+        out |= @intCast(((@as(u64, @as(u64, 1) << IP_from_64) & block_as_int) >> IP_from_64) << @intCast(63 - i));
     }
-
     var left_half:  u32 = @truncate((out >> 32));
     var right_half: u32 = @truncate( out );
     for (0..16) |i| {
@@ -31,31 +33,36 @@ pub fn process_8bytes(block: *[8]u8, subkeys: *const [16]u48) void {
 
     const after_16_rounds: u64 = (@as(u64, right_half) << 32) | @as(u64, left_half);
     out = 0;
-    for (&IP_1_u6, 0..64) |p_u6, j| {
-        out |= (((@as(u64, 1) << p_u6) & after_16_rounds) >> p_u6) << @intCast(63 - j);
+    for (0..64) |i| {
+        const col = i & 0x7;
+        const row = i >> 3;
+        const IP_1_from_64:u6 = @intCast(@as(u6, IP_1_first_row[col]) * 8 + row);  // = 63 - (IP_1 - 1)        
+        out |= (((@as(u64, 1) << IP_1_from_64) & after_16_rounds) >> IP_1_from_64) << @intCast(63 - i);
     }
     std.mem.writeInt(u64, block, out, .big);
 }
 
 fn generateKeys(key: u64, subkeys: *[16]u48) void {
     var stripped_key: u56 = 0;
-    for (&PC1_u6, 0..) |p_u6, i| {
-        stripped_key |= @intCast(((@as(u64, @as(u64, 1) << p_u6) & key) >> p_u6) << @intCast(55 - i));
+    for (0..56) |i| {
+        const col_4   = (i >> 2) & 0x1;
+        const row     =  i >> 3;
+        const col_ofs =  i & 0x3;
+        const PC1_from_64:u6 = @intCast(PC1_col_0and4[row][col_4] + (col_ofs * 8));  // = 63 - (PC1 - 1)        
+        stripped_key |= @intCast(((@as(u64, @as(u64, 1) << PC1_from_64) & key) >> PC1_from_64) << @intCast(55 - i));
     }
-
     var key_lhs: u28 = @intCast((stripped_key & @as(u56, 0xF_FF_FF_FF) << 28) >> 28);
     var key_rhs: u28 = @intCast( stripped_key & @as(u56, 0xF_FF_FF_FF)             );
     for (0..16) |i| { 
-        var k: u2 = 0;
-        while (k < ROTATIONS[i]) : (k += 1) {
+        const extra_rotation: usize = (@as(u16, 0b01111110_11111100) >> @intCast(i)) & 0x1;
+        for (0..1+extra_rotation) |_| { 
             key_lhs = (key_lhs << 1) | (key_lhs & @as(u28, 1 << 27)) >> 27;
             key_rhs = (key_rhs << 1) | (key_rhs & @as(u28, 1 << 27)) >> 27;
         }
-
         const subkey: u56 = (@as(u56, @intCast(key_lhs)) << 28) | @as(u56, @intCast(key_rhs));
         var permutated_subkey: u48 = 0;    
-        for (&PC2_u6, 0..) |p_u6, j| {
-            permutated_subkey |= @intCast((((@as(u56, 1) << p_u6) & subkey) >> p_u6) << @intCast(47 - j));
+        for (&PC2_FROM_56, 0..48) |pc2_from_56, j| {
+            permutated_subkey |= @intCast((((@as(u56, 1) << pc2_from_56) & subkey) >> pc2_from_56) << @intCast(47 - j));
         }
         subkeys.*[i] = permutated_subkey;
     }
@@ -82,62 +89,43 @@ fn applyFeistelRound(right_half: u32, subkey: u48) u32 {
     }
 
     var permuted_sbox_output: u32 = 0; 
-    for (&P_u5, 0..) |p_u5, j| {
-        permuted_sbox_output |= (((@as(u32, 1) << p_u5) & sbox_output) >> p_u5) << @intCast(31 - j);
+    for (&P_FROM_32, 0..32) |p_from_32, j| {
+        permuted_sbox_output |= (((@as(u32, 1) << p_from_32) & sbox_output) >> p_from_32) << @intCast(31 - j);
     }
     return permuted_sbox_output;
 }
 
-// Key Permuted Choice 1: PC1_u6 = 63 - (PC1 - 1)
-const PC1_u6 = [_]u6{
-     7, 15, 23, 31, 39, 47, 55, 63,
-     6, 14, 22, 30, 38, 46, 54, 62,
-     5, 13, 21, 29, 37, 45, 53, 61,
-     4, 12, 20, 28,  1,  9, 17, 25,
-    33, 41, 49, 57,  2, 10, 18, 26,
-    34, 42, 50, 58,  3, 11, 19, 27,
-    35, 43, 51, 59, 36, 44, 52, 60,
+// Key Permuted Choice 1:
+const PC1_col_0and4 = [7][2]u6{  // = 63 - (PC1 - 1)
+    .{ 7, 39},
+    .{ 6, 38},
+    .{ 5, 37},
+    .{ 4,  1},
+    .{33,  2},
+    .{34,  3},
+    .{35, 36},
 };
 
-// Key Permuted Choice 2: PC2_u6 = 55 - (PC2 - 1)
-const PC2_u6 = [_]u6{
-    42, 39, 45, 32, 55, 51, 53, 28,
-    41, 50, 35, 46, 33, 37, 44, 52,
-    30, 48, 40, 49, 29, 36, 43, 54,
-    15,  4, 25, 19,  9,  1, 26, 16,
-     5, 11, 23,  8, 12,  7, 17,  0,
-    22,  3, 10, 14,  6, 20, 27, 24,
+// Key Permuted Choice 2:
+const PC2_FROM_56 = [_]u6{  // = 55 - (PC2 - 1)
+    42, 39, 45, 32, 55, 51,
+    53, 28, 41, 50, 35, 46,
+    33, 37, 44, 52, 30, 48,
+    40, 49, 29, 36, 43, 54,
+    15,  4, 25, 19,  9,  1,
+    26, 16,  5, 11, 23,  8,
+    12,  7, 17,  0, 22,  3,
+    10, 14,  6, 20, 27, 24,
 };
 
-// Key Shifts/Rotations:
-const ROTATIONS = [_]u2{ 1, 1, 2, 2, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 2, 1};
+// Initial Permutation:
+const IP_first_col = [8]u3{ 6, 4, 2, 0, 7, 5, 3, 1};  // = 63 - (IP - 1)
 
-// Initial Permutation: IP_u6 = 63 - @as(u6, @intCast(IP - 1))
-const IP_u6 = [_]u6{
-    6, 14, 22, 30, 38, 46, 54, 62,
-    4, 12, 20, 28, 36, 44, 52, 60,
-    2, 10, 18, 26, 34, 42, 50, 58,
-    0,  8, 16, 24, 32, 40, 48, 56,
-    7, 15, 23, 31, 39, 47, 55, 63,
-    5, 13, 21, 29, 37, 45, 53, 61,
-    3, 11, 19, 27, 35, 43, 51, 59,
-    1,  9, 17, 25, 33, 41, 49, 57,
-};
+// Inverse Initial Permutation:
+const IP_1_first_row = [8]u3{ 3, 7, 2, 6, 1, 5, 0, 4};  // = (63 - (IP_1 - 1)) / 8
 
-// Inverse Initial Permutation: IP_1_u6 = 63 - @as(u6, @intCast(IP_1 - 1))
-const IP_1_u6 = [_]u6{
-    24, 56, 16, 48,  8, 40, 0, 32, 
-    25, 57, 17, 49,  9, 41, 1, 33,
-    26, 58, 18, 50, 10, 42, 2, 34,
-    27, 59, 19, 51, 11, 43, 3, 35,
-    28, 60, 20, 52, 12, 44, 4, 36,
-    29, 61, 21, 53, 13, 45, 5, 37,
-    30, 62, 22, 54, 14, 46, 6, 38,
-    31, 63, 23, 55, 15, 47, 7, 39,
-};
-
-// Permutation: P_u5 = 31 - (P - 1)
-const P_u5 = [_]u5 {
+// Permutation:
+const P_FROM_32 = [_]u5 {  // = 31 - (P - 1)
     16, 25, 12, 11,  3, 20,  4, 15,
     31, 17,  9,  6, 27, 14,  1, 22,
     30, 24,  8, 18,  0,  5, 29, 23,
