@@ -320,24 +320,24 @@ pub const Server = struct {
                     var response: [16]u8 = undefined;
                     try reader.readNoEof(&response);
 
- 					const server_password = "test";
-					var   des_key: u64 = 0; // zero "padded" buffer.
-					const used_len = @min(8, server_password.len); // truncate the password
-					// Note: often undocumented, VNC requires reversed bits in every password byte:
-					for (0..used_len) |i| {
-						des_key |= @as(u64, @bitReverse(server_password[i])) << @intCast(8 * (7 - i));
-					}
-					var subkeys: [16]u48 = .{0} ** 16;
-					des.init_encrypt(des_key, &subkeys);
-					var expected: [16]u8 = challenge;
-					des.process_8bytes(expected[0..8 ], &subkeys);
-					des.process_8bytes(expected[8..16], &subkeys);
+                    const server_password = "test";
+                    var   des_key: u64 = 0; // zero "padded" buffer.
+                    const used_len = @min(8, server_password.len); // truncate the password
+                    // Note: often undocumented, VNC requires reversed bits in every password byte:
+                    for (0..used_len) |i| {
+                        des_key |= @as(u64, @bitReverse(server_password[i])) << @intCast(8 * (7 - i));
+                    }
+                    var subkeys: [16]u48 = .{0} ** 16;
+                    des.init_encrypt(des_key, &subkeys);
+                    var expected: [16]u8 = challenge;
+                    des.process_8bytes(expected[0..8 ], &subkeys);
+                    des.process_8bytes(expected[8..16], &subkeys);
 
-					if(std.mem.eql(u8, &response, &expected)){
-						std.debug.print("Received correct password challange.\n", .{});
-					}else{
-						std.debug.print("Received INCORRECT password challange! use the \"{s}\" password.\n", .{server_password});
-					}
+                    if(std.mem.eql(u8, &response, &expected)){
+                        std.debug.print("Received correct password challange.\n", .{});
+                    }else{
+                        std.debug.print("Received INCORRECT password challange! use the \"{s}\" password.\n", .{server_password});
+                    }
                     break :blk std.mem.eql(u8, &response, &expected);
                 },
                 else => return error.ProtocolMismatch,

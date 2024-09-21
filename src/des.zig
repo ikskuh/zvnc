@@ -6,12 +6,12 @@
 const std = @import("std");
 
 pub fn init_encrypt(key: u64, subkeys: *[16]u48) void {
-	generateKeys(key, subkeys);
+    generateKeys(key, subkeys);
 }
 
 pub fn init_decrypt(key: u64, subkeys: *[16]u48) void {
-	generateKeys(key, subkeys);
-	std.mem.reverse(u48, subkeys[0..]);
+    generateKeys(key, subkeys);
+    std.mem.reverse(u48, subkeys[0..]);
 }
 
 pub fn process_8bytes(block: *[8]u8, subkeys: *const [16]u48) void {
@@ -42,10 +42,10 @@ fn generateKeys(key: u64, subkeys: *[16]u48) void {
     for (&PC1_u6, 0..) |p_u6, i| {
         stripped_key |= @intCast(((@as(u64, @as(u64, 1) << p_u6) & key) >> p_u6) << @intCast(55 - i));
     }
-	
+
     var key_lhs: u28 = @intCast((stripped_key & @as(u56, 0xF_FF_FF_FF) << 28) >> 28);
     var key_rhs: u28 = @intCast( stripped_key & @as(u56, 0xF_FF_FF_FF)             );
-	for (0..16) |i| { 
+    for (0..16) |i| { 
         var k: u2 = 0;
         while (k < ROTATIONS[i]) : (k += 1) {
             key_lhs = (key_lhs << 1) | (key_lhs & @as(u28, 1 << 27)) >> 27;
@@ -64,19 +64,19 @@ fn generateKeys(key: u64, subkeys: *[16]u48) void {
 fn applyFeistelRound(right_half: u32, subkey: u48) u32 {
     var expanded_right_half: u48 = 0;
     for (0..48) |i| {
-		const row      = @divFloor(i, 6);        // every 6 indexes, there is an extra -2 shift, mapping the 6*8=48 inputs to 32 outputs.
-		const unbound  = i - (row * 2);          //  0, 1..32, 33
-		const bound    = @mod(unbound + 31, 32); // 31, 0..31, 0 
-		const shift:u5 = @intCast(31 - bound);   //  0, 31..0, 31 
+        const row      = @divFloor(i, 6);        // every 6 indexes, there is an extra -2 shift, mapping the 6*8=48 inputs to 32 outputs.
+        const unbound  = i - (row * 2);          //  0, 1..32, 33
+        const bound    = @mod(unbound + 31, 32); // 31, 0..31, 0 
+        const shift:u5 = @intCast(31 - bound);   //  0, 31..0, 31 
         expanded_right_half |= (@as(u48, ((@as(u32, 1) << shift) & right_half) >> shift) << @intCast(47 - i));
     }
     const keyed_expansion: u48 = expanded_right_half ^ subkey;
 
     var sbox_output: u32 = 0;
-	for (0..8) |s_box_idx| {
+    for (0..8) |s_box_idx| {
         const six_bit_chunk: u6 = @truncate(keyed_expansion >> @intCast(6 * ((S_TABLES.len - 1) - s_box_idx)));
-		const row:   usize = (six_bit_chunk & 0x1) | ((six_bit_chunk & 0x20) >> 4); // bit 0 and 5
-		const col:   usize = (six_bit_chunk >> 1) & 0xF;                            // bit  1...4
+        const row:   usize = (six_bit_chunk & 0x1) | ((six_bit_chunk & 0x20) >> 4); // bit 0 and 5
+        const col:   usize = (six_bit_chunk >> 1) & 0xF;                            // bit  1...4
         const s_box: u32 = S_TABLES[s_box_idx][row][col];
         sbox_output |= s_box << @as(u5, @intCast(4 * ((S_TABLES.len - 1) - s_box_idx)));
     }
