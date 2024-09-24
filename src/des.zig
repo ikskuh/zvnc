@@ -1,17 +1,15 @@
-// based on: DES encryption/decryption cli tool written in zig, by JungerBoyo
-// https://github.com/JungerBoyo/DES/blob/main/src/main.zig
-
 // DES is not secure, this is only for compatibility with the unencrypted VNC protocol.
+// based on: https://github.com/JungerBoyo/DES/blob/main/src/main.zig
 
 const std = @import("std");
 
-pub fn init_encrypt(key: u64, subkeys: *[16]u48) void {
-    generateKeys(key, subkeys);
+pub fn init_encrypt(key: u64, returned_subkeys: *[16]u48) void {
+    key_to_subkeys(key, returned_subkeys);
 }
 
-pub fn init_decrypt(key: u64, subkeys: *[16]u48) void {
-    generateKeys(key, subkeys);
-    std.mem.reverse(u48, subkeys[0..]);
+pub fn init_decrypt(key: u64, returned_subkeys: *[16]u48) void {
+    key_to_subkeys(key, returned_subkeys);
+    std.mem.reverse(u48, returned_subkeys[0..]);
 }
 
 pub fn process_8bytes(block: *[8]u8, subkeys: *const [16]u48) void {
@@ -19,64 +17,59 @@ pub fn process_8bytes(block: *[8]u8, subkeys: *const [16]u48) void {
     var out: u64 = 0;
     for (0..8) |row| {
         for (0..8) |col| {
-            const IP_from_64: u6 = @intCast(IP_first_col[row] + (col * 8));  // = 63 - (IP - 1)
+            const IP_from_64: u6 = @intCast(IP_first_col[row] + (col * 8));  // = 64 - IP
             out = (out << 1) | ((block_as_int >> IP_from_64) & 0x1);
         }
     }
-    for (0..16) |i| out = (out << 32) | ((out >> 32) ^ applyFeistelRound(@truncate(out), subkeys[i]));
+    for (0..16) |i| out = (out << 32) | ((out >> 32) ^ feistel_round(@truncate(out), subkeys[i]));
     const after_16_rounds = out;  // the final swap of left/right 32 bit is handled by the IP_1 table.
     for (0..8) |row| {
         for (0..8) |col| {
-            const IP_1_from_64:u6 = @intCast(@as(u6, IP_1_first_row[col]) * 8 + row);  // = 63 - (IP_1 - 1)        
-            out = (out << 1) | ((after_16_rounds >> IP_1_from_64) & 0x1); // old value will be shifted out.
+            const IP_1_from_64:u6 = @intCast(@as(u6, IP_1_first_row[col]) * 8 + row);  // = 64 - IP_1
+            out = (out << 1) | ((after_16_rounds >> IP_1_from_64) & 0x1);  // old value is shifted out.
         }
     }
     std.mem.writeInt(u64, block, out, .big);
 }
 
-fn generateKeys(key: u64, subkeys: *[16]u48) void {
-    var stripped_key: u56 = 0;
+fn key_to_subkeys(key: u64, subkeys: *[16]u48) void {
+    var stripped_key: u56 = 0; // Note: 8 "parity bits" in the 64-bit key are ignored.
     for (0..7) |row| {
         for (0..8) |col| {
-            const PC1_from_64:u6 = @intCast(PC1_col_0and4[row][col >> 2] + ((col & 0b11) * 8));  // = 63 - (PC1 - 1)        
-            stripped_key = (stripped_key << 1) | @as(u1, @intCast((key >> PC1_from_64) & 0x1));
+            const PC1_from_64:u6 = @intCast(PC1_col_0and4[row][col >> 2] + ((col & 0b11) * 8));  // = 64 - PC1
+            stripped_key = (stripped_key << 1) | @as(u1, @truncate(key >> PC1_from_64));
         }
     }
-    for (0..16) |i| { 
+    for (0..16, subkeys) |i, *subkey| {
         const extra_rotation: usize = (@as(u16, 0b01111110_11111100) >> @intCast(i)) & 0x1;
         for (0..1+extra_rotation) |_| stripped_key = ((stripped_key & 0x7FFFFFF_7FFFFFF) <<  1) |
                                                      ((stripped_key & 0x8000000_8000000) >> 27);
-        var subkey: u48 = 0;    
-        for (0..48) |j| subkey = (subkey << 1) | @as(u1, @intCast((stripped_key >> PC2_FROM_56[j]) & 0x1));
-        subkeys.*[i] = subkey;
-    }
+        for (0..48) |j| subkey.* = (subkey.* << 1) | @as(u1, @truncate(stripped_key >> PC2_FROM_56[j]));  // old value is shifted out.
+    }        
 }
 
-fn applyFeistelRound(right_half: u32, subkey: u48) u32 {
+fn feistel_round(right_half: u32, subkey: u48) u32 {
     var expanded_right_half: u48 = 0;
-    for (0..48) |i| { // Expansion function:
-        const row     = @divFloor(i, 6);
-        const unbound = i - (row * 2);          //  0, 1..32, 33
-        const bound   = @mod(unbound + 31, 32); // 31, 0..31, 0 
-        const E:u5    = @intCast(31 - bound);   //  0, 31..0, 31 
+    for (0..48) |i| { // 32 to 48 bit expansion. E[48] = 0, 31..0, 31
+        const row  = @divFloor(i, 6);
+        const E:u5 = @intCast( @mod(64 - i + (row * 2), 32) );  // 64 prevents negative values.
         expanded_right_half = (expanded_right_half << 1) | ((right_half >> E) & 0x1);
     }
     const keyed_expansion: u48 = expanded_right_half ^ subkey;
     var sbox_output: u32 = 0;
     for (0..8) |s_box_idx| {
-        const six_bit_chunk: u6 = @truncate(keyed_expansion >> @intCast(6 * ((S_TABLES.len - 1) - s_box_idx)));
-        const row:   usize = (six_bit_chunk & 0b1) | ((six_bit_chunk & 0b10_0000) >> 4); // bit 0 and 5
-        const col:   usize = (six_bit_chunk >> 1) & 0b1111;                              // bit  1...4
-        const s_box: u32 = S_TABLES[s_box_idx][row][col];
-        sbox_output |= s_box << @as(u5, @intCast(4 * ((S_TABLES.len - 1) - s_box_idx)));
+        const six_bit_chunk: u6 = @truncate(keyed_expansion >> @intCast(s_box_idx * 6));
+        const row = ((six_bit_chunk & 0b100000) >> 4) | (six_bit_chunk & 0b000001);
+        const col =  (six_bit_chunk & 0b011110) >> 1;
+        sbox_output |= @as(u32, S_TABLES[s_box_idx][row][col]) << @intCast(s_box_idx * 4);
     }
-    var permuted: u32 = 0; 
+    var permuted: u32 = 0;
     for (0..32) |i| permuted = (permuted << 1) | ((sbox_output >> P_FROM_32[i]) & 0x1);
     return permuted;
 }
 
-// Key Permuted Choice 1:
-const PC1_col_0and4 = [7][2]u6{  // = 63 - (PC1 - 1)
+// 64 - Key Permuted Choice 1:
+const PC1_col_0and4 = [7][2]u6{
     .{ 7, 39},
     .{ 6, 38},
     .{ 5, 37},
@@ -86,8 +79,8 @@ const PC1_col_0and4 = [7][2]u6{  // = 63 - (PC1 - 1)
     .{35, 36},
 };
 
-// Key Permuted Choice 2:
-const PC2_FROM_56 = [_]u6{  // = 55 - (PC2 - 1)
+// 56 - Key Permuted Choice 2:
+const PC2_FROM_56 = [_]u6{
     42, 39, 45, 32, 55, 51,
     53, 28, 41, 50, 35, 46,
     33, 37, 44, 52, 30, 48,
@@ -98,69 +91,68 @@ const PC2_FROM_56 = [_]u6{  // = 55 - (PC2 - 1)
     10, 14,  6, 20, 27, 24,
 };
 
-// Initial Permutation:
-const IP_first_col = [8]u3{ 6, 4, 2, 0, 7, 5, 3, 1};  // = 63 - (IP - 1)
+// 64 - Initial Permutation:
+const IP_first_col = [8]u3{ 6, 4, 2, 0, 7, 5, 3, 1};
 
-// Inverse Initial Permutation:  (now includes the final left/right 32bit swap)
-const IP_1_first_row = [8]u3{ 7, 3, 6, 2, 5, 1, 4, 0};  // = (63 - (IP_1 - 1)) / 8
+// (64 - Inverse Initial Permutation)/8:  (includes the final left/right 32bit swap)
+const IP_1_first_row = [8]u3{ 7, 3, 6, 2, 5, 1, 4, 0};
 
-// Permutation:
-const P_FROM_32 = [_]u5 {  // = 31 - (P - 1)
+// 32 - Permutation:
+const P_FROM_32 = [_]u5 {
     16, 25, 12, 11,  3, 20,  4, 15,
     31, 17,  9,  6, 27, 14,  1, 22,
     30, 24,  8, 18,  0,  5, 29, 23,
     13, 19,  2, 26, 10, 21, 28,  7,
 };
 
-// Substitution Boxes: [chunk][row][col]
+// Substitution Boxes: [7-chunk][row][col]  (reversed chunk order)
 const S_TABLES = [8][4][16]u4{
     .{
-        .{14,  4, 13,  1,  2, 15, 11,  8,  3, 10,  6, 12,  5,  9,  0,  7}, 
-        .{ 0, 15,  7,  4, 14,  2, 13,  1, 10,  6, 12, 11,  9,  5,  3,  8},
-        .{ 4,  1, 14,  8, 13,  6,  2, 11, 15, 12,  9,  7,  3, 10,  5,  0},
-        .{15, 12,  8,  2,  4,  9,  1,  7,  5, 11,  3, 14, 10,  0,  6, 13},
-    },.{    
-        .{15,  1,  8, 14,  6, 11,  3,  4,  9,  7,  2, 13, 12,  0,  5, 10}, 
-        .{ 3, 13,  4,  7, 15,  2,  8, 14, 12,  0,  1, 10,  6,  9, 11,  5},
-        .{ 0, 14,  7, 11, 10,  4, 13,  1,  5,  8, 12,  6,  9,  3,  2, 15},
-        .{13,  8, 10,  1,  3, 15,  4,  2, 11,  6,  7, 12,  0,  5, 14,  9},
+        .{13,  2,  8,  4,  6, 15, 11,  1, 10,  9,  3, 14,  5,  0, 12,  7},
+        .{ 1, 15, 13,  8, 10,  3,  7,  4, 12,  5,  6, 11,  0, 14,  9,  2},
+        .{ 7, 11,  4,  1,  9, 12, 14,  2,  0,  6, 10, 13, 15,  3,  5,  8},
+        .{ 2,  1, 14,  7,  4, 10,  8, 13, 15, 12,  9,  0,  3,  5,  6, 11},
     },.{
-        .{10,  0,  9, 14,  6,  3, 15,  5,  1, 13, 12,  7, 11,  4,  2,  8}, 
-        .{13,  7,  0,  9,  3,  4,  6, 10,  2,  8,  5, 14, 12, 11, 15,  1},
-        .{13,  6,  4,  9,  8, 15,  3,  0, 11,  1,  2, 12,  5, 10, 14,  7},
-        .{ 1, 10, 13,  0,  6,  9,  8,  7,  4, 15, 14,  3, 11,  5,  2, 12},
-    },.{
-        .{ 7, 13, 14,  3,  0,  6,  9, 10,  1,  2,  8,  5, 11, 12,  4, 15}, 
-        .{13,  8, 11,  5,  6, 15,  0,  3,  4,  7,  2, 12,  1, 10, 14,  9},
-        .{10,  6,  9,  0, 12, 11,  7, 13, 15,  1,  3, 14,  5,  2,  8,  4},
-        .{ 3, 15,  0,  6, 10,  1, 13,  8,  9,  4,  5, 11, 12,  7,  2, 14},
-    },.{
-        .{ 2, 12,  4,  1,  7, 10, 11,  6,  8,  5,  3, 15, 13,  0, 14,  9}, 
-        .{14, 11,  2, 12,  4,  7, 13,  1,  5,  0, 15, 10,  3,  9,  8,  6},
-        .{ 4,  2,  1, 11, 10, 13,  7,  8, 15,  9, 12,  5,  6,  3,  0, 14},
-        .{11,  8, 12,  7,  1, 14,  2, 13,  6, 15,  0,  9, 10,  4,  5,  3},
-    },.{
-        .{12,  1, 10, 15,  9,  2,  6,  8,  0, 13,  3,  4, 14,  7,  5, 11}, 
-        .{10, 15,  4,  2,  7, 12,  9,  5,  6,  1, 13, 14,  0, 11,  3,  8},
-        .{ 9, 14, 15,  5,  2,  8, 12,  3,  7,  0,  4, 10,  1, 13, 11,  6},
-        .{ 4,  3,  2, 12,  9,  5, 15, 10, 11, 14,  1,  7,  6,  0,  8, 13},
-    },.{
-        .{ 4, 11,  2, 14, 15,  0,  8, 13,  3, 12,  9,  7,  5, 10,  6,  1}, 
+        .{ 4, 11,  2, 14, 15,  0,  8, 13,  3, 12,  9,  7,  5, 10,  6,  1},
         .{13,  0, 11,  7,  4,  9,  1, 10, 14,  3,  5, 12,  2, 15,  8,  6},
         .{ 1,  4, 11, 13, 12,  3,  7, 14, 10, 15,  6,  8,  0,  5,  9,  2},
         .{ 6, 11, 13,  8,  1,  4, 10,  7,  9,  5,  0, 15, 14,  2,  3, 12},
     },.{
-        .{13,  2,  8,  4,  6, 15, 11,  1, 10,  9,  3, 14,  5,  0, 12,  7}, 
-        .{ 1, 15, 13,  8, 10,  3,  7,  4, 12,  5,  6, 11,  0, 14,  9,  2},
-        .{ 7, 11,  4,  1,  9, 12, 14,  2,  0,  6, 10, 13, 15,  3,  5,  8},
-        .{ 2,  1, 14,  7,  4, 10,  8, 13, 15, 12,  9,  0,  3,  5,  6, 11},
+        .{12,  1, 10, 15,  9,  2,  6,  8,  0, 13,  3,  4, 14,  7,  5, 11},
+        .{10, 15,  4,  2,  7, 12,  9,  5,  6,  1, 13, 14,  0, 11,  3,  8},
+        .{ 9, 14, 15,  5,  2,  8, 12,  3,  7,  0,  4, 10,  1, 13, 11,  6},
+        .{ 4,  3,  2, 12,  9,  5, 15, 10, 11, 14,  1,  7,  6,  0,  8, 13},
+    },.{
+        .{ 2, 12,  4,  1,  7, 10, 11,  6,  8,  5,  3, 15, 13,  0, 14,  9},
+        .{14, 11,  2, 12,  4,  7, 13,  1,  5,  0, 15, 10,  3,  9,  8,  6},
+        .{ 4,  2,  1, 11, 10, 13,  7,  8, 15,  9, 12,  5,  6,  3,  0, 14},
+        .{11,  8, 12,  7,  1, 14,  2, 13,  6, 15,  0,  9, 10,  4,  5,  3},
+    },.{
+        .{ 7, 13, 14,  3,  0,  6,  9, 10,  1,  2,  8,  5, 11, 12,  4, 15},
+        .{13,  8, 11,  5,  6, 15,  0,  3,  4,  7,  2, 12,  1, 10, 14,  9},
+        .{10,  6,  9,  0, 12, 11,  7, 13, 15,  1,  3, 14,  5,  2,  8,  4},
+        .{ 3, 15,  0,  6, 10,  1, 13,  8,  9,  4,  5, 11, 12,  7,  2, 14},
+    },.{
+        .{10,  0,  9, 14,  6,  3, 15,  5,  1, 13, 12,  7, 11,  4,  2,  8},
+        .{13,  7,  0,  9,  3,  4,  6, 10,  2,  8,  5, 14, 12, 11, 15,  1},
+        .{13,  6,  4,  9,  8, 15,  3,  0, 11,  1,  2, 12,  5, 10, 14,  7},
+        .{ 1, 10, 13,  0,  6,  9,  8,  7,  4, 15, 14,  3, 11,  5,  2, 12},
+    },.{    
+        .{15,  1,  8, 14,  6, 11,  3,  4,  9,  7,  2, 13, 12,  0,  5, 10},
+        .{ 3, 13,  4,  7, 15,  2,  8, 14, 12,  0,  1, 10,  6,  9, 11,  5},
+        .{ 0, 14,  7, 11, 10,  4, 13,  1,  5,  8, 12,  6,  9,  3,  2, 15},
+        .{13,  8, 10,  1,  3, 15,  4,  2, 11,  6,  7, 12,  0,  5, 14,  9},
+    },.{
+        .{14,  4, 13,  1,  2, 15, 11,  8,  3, 10,  6, 12,  5,  9,  0,  7},
+        .{ 0, 15,  7,  4, 14,  2, 13,  1, 10,  6, 12, 11,  9,  5,  3,  8},
+        .{ 4,  1, 14,  8, 13,  6,  2, 11, 15, 12,  9,  7,  3, 10,  5,  0},
+        .{15, 12,  8,  2,  4,  9,  1,  7,  5, 11,  3, 14, 10,  0,  6, 13},
     }
 };
 
-test "DES Test Vectors" {
-    // "19 Key data pairs which exercise every S-box entry."
-    // U.S. National Bureau of Standards, 1977 (now NIST)
-    // https://archive.org/details/validatingcorrec00gait/page/33/mode/1up
+test "DES Test Vectors" {  // run:  "zig test des.zig"
+    // "19 Key data pairs which exercise every S-box entry." National Bureau of Standards 1977 (now NIST)
+    // page 33: https://archive.org/details/validatingcorrec00gait/page/33/mode/1up
     const TEST_VECTORS = [_][3]u64{  //  key,  plaintext,  cipher
         .{0x7CA110454A1A6E57, 0x01A1D6D039776742, 0x690F5B0D9A26939B},
         .{0x0131D9619DC1376E, 0x5CD54CA83DEF57DA, 0x7A389D10354BD271},
@@ -180,11 +172,10 @@ test "DES Test Vectors" {
         .{0x4FB05E1515AB73A7, 0x072D43A077075292, 0x2F22E49BAB7CA1AC},
         .{0x49E95D6D4CA229BF, 0x02FE55778117F12A, 0x5A6B612CC26CCE4A},
         .{0x018310DC409B26D6, 0x1D9D5C5018F728C2, 0x5F4C038ED12B2E41},
-        .{0x1C587F1C13924FEF, 0x305532286D6F295A, 0x63FAC0D034D9F793}, 
+        .{0x1C587F1C13924FEF, 0x305532286D6F295A, 0x63FAC0D034D9F793},
     };
 
-    for (TEST_VECTORS, 0..) |test_vector, i| {
-        std.debug.print("test vector {}:\n", .{i});
+    for (TEST_VECTORS) |test_vector| {
         const key             = test_vector[0];
         const plaintext       = test_vector[1];
         const expected_cipher = test_vector[2];
@@ -199,7 +190,7 @@ test "DES Test Vectors" {
         try std.testing.expect(encrypted_block == expected_cipher);
 
         // test decryption:
-        std.mem.writeInt(u64, &block, encrypted_block, .big);
+        std.mem.writeInt(u64, &block, expected_cipher, .big);
         init_decrypt(key, &subkeys);
         process_8bytes(&block, &subkeys);
         const decrypted_block: u64 = std.mem.readInt(u64, &block, .big);
