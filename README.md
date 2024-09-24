@@ -1,9 +1,17 @@
 # Zig VNC Library
 
+Forked from: https://github.com/ikskuh/zvnc
+
+Changes:
+ - authentication validation, with test code in server.
+
+
 ## Status
 
 - [x] Basic Server Library
 - [ ] Basic Client Library
+- [ ] screen capture
+- [ ] screen rendering
 
 ## Usage Examples
 
@@ -12,5 +20,5 @@
 
 ## Development
 
-Zig Version: 0.11
+Zig Version: 0.14
 
