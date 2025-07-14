@@ -4,7 +4,7 @@
     .dependencies = .{
         .network = .{
             .url = "https://github.com/ikskuh/zig-network/archive/117d0d5d3ba2891ce4c8e3dfcd0c24a3976a46ce.tar.gz",
-            .hash = "122033a766875fe3e349f81903e1ca33f47b5887a506b2916269d16a8576d607652b",
+            .hash = "network-0.1.0-AAAAABcrAQAzp2aHX-PjSfgZA-HKM_R7WIelBrKRYmnR",
         },
     },
     .paths = .{""},
