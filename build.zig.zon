@@ -4,8 +4,8 @@
     .fingerprint = 0x5a7ffdcd8513678a,
     .dependencies = .{
         .network = .{
-            .url = "https://github.com/ikskuh/zig-network/archive/117d0d5d3ba2891ce4c8e3dfcd0c24a3976a46ce.tar.gz",
-            .hash = "network-0.1.0-AAAAABcrAQAzp2aHX-PjSfgZA-HKM_R7WIelBrKRYmnR",
+            .url = "git+https://github.com/ikskuh/zig-network.git#7947237eec317d9458897f82089f343a05450c2b",
+            .hash = "network-0.1.0-Pm-Agl8xAQBmkwohveGOfTk4zQnuqDs0Ptfbms4KP5Ce",
         },
     },
     .paths = .{""},
