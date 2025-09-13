@@ -1,6 +1,7 @@
 .{
-    .name = "zvnc",
+    .name = .zvnc,
     .version = "0.0.0",
+    .fingerprint = 0x5a7ffdcd8513678a,
     .dependencies = .{
         .network = .{
             .url = "https://github.com/ikskuh/zig-network/archive/117d0d5d3ba2891ce4c8e3dfcd0c24a3976a46ce.tar.gz",
