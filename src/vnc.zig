@@ -5,6 +5,8 @@
 //!
 const std = @import("std");
 const network = @import("network");
+const des = @import("des.zig");
+
 
 pub const Color = struct {
     r: f32,
@@ -295,7 +297,9 @@ pub const Server = struct {
         // Security handshake. We are insecure.
         {
             try writer.writeByte(1); // number of types
-            try writer.writeByte(@intFromEnum(Security.none)); // "no security"
+//            try writer.writeByte(@intFromEnum(Security.none)); // "no security"
+            try writer.writeByte(@intFromEnum(Security.vnc_authentication)); // test DES encrypted challange, with "test" password.
+
 
             const selected_security = std.meta.intToEnum(Security, try reader.readByte()) catch return error.ProtocolMismatch;
 
@@ -316,9 +320,25 @@ pub const Server = struct {
                     var response: [16]u8 = undefined;
                     try reader.readNoEof(&response);
 
-                    // TODO: Implement a proper DES verification
+                    const server_password = "test";
+                    var   des_key: u64 = 0; // zero "padded" buffer.
+                    const used_len = @min(8, server_password.len); // truncate the password
+                    // Note: often undocumented, VNC requires reversed bits in every password byte:
+                    for (0..used_len) |i| {
+                        des_key |= @as(u64, @bitReverse(server_password[i])) << @intCast(8 * (7 - i));
+                    }
+                    var subkeys: [16]u48 = .{0} ** 16;
+                    des.init_encrypt(des_key, &subkeys);
+                    var expected: [16]u8 = challenge;
+                    des.process_8bytes(expected[0..8 ], &subkeys);
+                    des.process_8bytes(expected[8..16], &subkeys);
 
-                    break :blk std.mem.eql(u8, &response, "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00");
+                    if(std.mem.eql(u8, &response, &expected)){
+                        std.debug.print("Received correct password challange.\n", .{});
+                    }else{
+                        std.debug.print("Received INCORRECT password challange! use the \"{s}\" password.\n", .{server_password});
+                    }
+                    break :blk std.mem.eql(u8, &response, &expected);
                 },
                 else => return error.ProtocolMismatch,
             };
@@ -328,7 +348,7 @@ pub const Server = struct {
             } else {
                 try writer.writeInt(u32, 1, .big); // handshake failed
 
-                const error_message = "Hello World!";
+                const error_message = "zvnc server: authentication failed!";
 
                 try writer.writeInt(u32, error_message.len, .big);
                 try writer.writeAll(error_message);
