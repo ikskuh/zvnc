@@ -231,9 +231,7 @@ pub const PixelFormat = struct {
         _ = encoded;
     }
 
-    pub fn format(pf: PixelFormat, fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
-        _ = fmt;
-        _ = options;
+    pub fn format(pf: PixelFormat, writer: *std.Io.Writer) !void {
         try writer.print(
             \\PixelFormat({} bpp, {} )
         , .{
