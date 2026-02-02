@@ -27,7 +27,7 @@ pub const ProtocolVersion = struct {
         const major_version = std.fmt.parseInt(u8, handshake[4..7], 10) catch return error.ProtocolMismatch;
         const minor_version = std.fmt.parseInt(u8, handshake[8..11], 10) catch return error.ProtocolMismatch;
 
-        return ProtocolVersion{ .major = major_version, .minor = minor_version };
+        return .{ .major = major_version, .minor = minor_version };
     }
 };
 
@@ -112,7 +112,7 @@ pub const Encoding = enum(i32) {
 ///
 /// See also: https://datatracker.ietf.org/doc/html/rfc6143#section-7.4
 pub const PixelFormat = struct {
-    pub const bgrx8888 = PixelFormat{
+    pub const bgrx8888: PixelFormat = .{
         .bpp = 32,
         .depth = 24,
         .big_endian = 0,
@@ -148,7 +148,7 @@ pub const PixelFormat = struct {
     green_shift: u8,
     blue_shift: u8,
 
-    pub fn serialize(self: PixelFormat, writer: anytype) !void {
+    pub fn serialize(self: PixelFormat, writer: *std.Io.Writer) !void {
         try writer.writeInt(u8, self.bpp, .big);
         try writer.writeInt(u8, self.depth, .big);
         try writer.writeInt(u8, self.big_endian, .big);
@@ -162,21 +162,21 @@ pub const PixelFormat = struct {
         try writer.writeAll("\x00\x00\x00"); // padding
     }
 
-    pub fn deserialize(reader: anytype) !PixelFormat {
-        const pf = PixelFormat{
-            .bpp = try reader.readInt(u8, .big),
-            .depth = try reader.readInt(u8, .big),
-            .big_endian = try reader.readInt(u8, .big),
-            .true_color = try reader.readInt(u8, .big),
-            .red_max = try reader.readInt(u16, .big),
-            .green_max = try reader.readInt(u16, .big),
-            .blue_max = try reader.readInt(u16, .big),
-            .red_shift = try reader.readInt(u8, .big),
-            .green_shift = try reader.readInt(u8, .big),
-            .blue_shift = try reader.readInt(u8, .big),
+    pub fn deserialize(reader: *std.Io.Reader) !PixelFormat {
+        const pf: PixelFormat = .{
+            .bpp = try reader.takeInt(u8, .big),
+            .depth = try reader.takeInt(u8, .big),
+            .big_endian = try reader.takeInt(u8, .big),
+            .true_color = try reader.takeInt(u8, .big),
+            .red_max = try reader.takeInt(u16, .big),
+            .green_max = try reader.takeInt(u16, .big),
+            .blue_max = try reader.takeInt(u16, .big),
+            .red_shift = try reader.takeInt(u8, .big),
+            .green_shift = try reader.takeInt(u8, .big),
+            .blue_shift = try reader.takeInt(u8, .big),
         };
         var padding: [3]u8 = undefined;
-        try reader.readNoEof(&padding); // padding
+        try reader.readSliceAll(&padding); // padding
         return pf;
     }
 
@@ -199,7 +199,7 @@ pub const PixelFormat = struct {
         switch (pf.bpp) {
             8 => {
                 const part = buf[0..1];
-                std.mem.writeInt(u8, part, @as(u8, @truncate(encoded)), endianess);
+                std.mem.writeInt(u8, part, @truncate(encoded), endianess);
                 return part;
             },
             16 => {
@@ -231,22 +231,20 @@ pub const PixelFormat = struct {
         _ = encoded;
     }
 
-    pub fn format(pf: PixelFormat, fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
-        _ = fmt;
-        _ = options;
+    pub fn format(pf: PixelFormat, writer: *std.Io.Writer) !void {
         try writer.print(
             \\PixelFormat({} bpp, {} )
         , .{
             pf.bpp,
             pf.depth,
-            // pf.big_endian,
-            // pf.true_color,
-            // pf.red_max,
-            // pf.green_max,
-            // pf.blue_max,
-            // pf.red_shift,
-            // pf.green_shift,
-            // pf.blue_shift,
+                // pf.big_endian,
+                // pf.true_color,
+                // pf.red_max,
+                // pf.green_max,
+                // pf.blue_max,
+                // pf.red_shift,
+                // pf.green_shift,
+                // pf.blue_shift,
         });
     }
 };
@@ -266,7 +264,9 @@ pub const ServerProperties = struct {
 
 pub const Server = struct {
     socket: network.Socket,
-    temp_memory: std.ArrayListAligned(u8, 16),
+    temp_memory: std.array_list.AlignedManaged(u8, .@"16"),
+    socket_reader: network.Socket.Reader,
+    socket_writer: network.Socket.Writer,
 
     // public api:
 
@@ -274,20 +274,31 @@ pub const Server = struct {
     shared_connection: bool,
     pixel_format: PixelFormat,
 
-    pub fn open(allocator: std.mem.Allocator, sock: network.Socket, properties: ServerProperties) !Server {
+    pub fn open(
+        allocator: std.mem.Allocator,
+        sock: network.Socket,
+        properties: ServerProperties,
+        buffers: struct {
+            reader: []u8,
+            writer: []u8,
+        },
+    ) !Server {
         errdefer sock.close();
 
         const desktop_name_len = std.math.cast(u32, properties.desktop_name.len) orelse return error.Overflow;
 
-        var writer = sock.writer();
-        var reader = sock.reader();
+        var sock_writer = sock.writer(buffers.writer);
+        const writer: *std.Io.Writer = &sock_writer.interface;
+        var sock_reader = sock.reader(buffers.reader);
+        const reader: *std.Io.Reader = &sock_reader.interface;
 
         // Initial handshake
         const protocol_version = blk: {
             try writer.writeAll("RFB 003.008\n"); // RFB Version 3.8
+            try writer.flush();
 
             var handshake: [12]u8 = undefined;
-            try reader.readNoEof(&handshake);
+            try reader.readSliceAll(&handshake);
 
             break :blk try ProtocolVersion.parse(handshake);
         };
@@ -297,7 +308,7 @@ pub const Server = struct {
             try writer.writeByte(1); // number of types
             try writer.writeByte(@intFromEnum(Security.none)); // "no security"
 
-            const selected_security = std.meta.intToEnum(Security, try reader.readByte()) catch return error.ProtocolMismatch;
+            const selected_security = std.meta.intToEnum(Security, try reader.takeByte()) catch return error.ProtocolMismatch;
 
             std.debug.print("client security: {}\n", .{selected_security});
 
@@ -307,6 +318,7 @@ pub const Server = struct {
                     var challenge: [16]u8 = undefined;
                     std.crypto.random.bytes(&challenge);
                     try writer.writeAll(&challenge);
+                    try writer.flush();
 
                     // The client encrypts the challenge with DES, using a password supplied
                     // by the user as the key. To form the key, the password is truncated
@@ -314,7 +326,7 @@ pub const Server = struct {
                     // client then sends the resulting 16-byte response:
 
                     var response: [16]u8 = undefined;
-                    try reader.readNoEof(&response);
+                    try reader.readSliceAll(&response);
 
                     // TODO: Implement a proper DES verification
 
@@ -325,6 +337,7 @@ pub const Server = struct {
 
             if (authentication_good) {
                 try writer.writeInt(u32, 0, .big); // handshake OK
+                try writer.flush();
             } else {
                 try writer.writeInt(u32, 1, .big); // handshake failed
 
@@ -332,6 +345,7 @@ pub const Server = struct {
 
                 try writer.writeInt(u32, error_message.len, .big);
                 try writer.writeAll(error_message);
+                try writer.flush();
 
                 // We failed to handle the client connection, but
                 // this is a "successful" state.
@@ -341,7 +355,7 @@ pub const Server = struct {
 
         // Initialization phase
         const shared_connection = blk: {
-            const shared_flag = try reader.readByte(); // 0 => disconnect others, 1 => share with others
+            const shared_flag = try reader.takeByte(); // 0 => disconnect others, 1 => share with others
 
             try writer.writeInt(u16, properties.screen_width, .big); // width
             try writer.writeInt(u16, properties.screen_height, .big); // height
@@ -353,9 +367,11 @@ pub const Server = struct {
             break :blk (shared_flag != 0);
         };
 
-        return Server{
+        return .{
             .socket = sock,
-            .temp_memory = std.ArrayListAligned(u8, 16).init(allocator),
+            .temp_memory = std.array_list.AlignedManaged(u8, .@"16").init(allocator),
+            .socket_reader = sock_reader,
+            .socket_writer = sock_writer,
 
             .protocol_version = protocol_version,
             .shared_connection = shared_connection,
@@ -370,9 +386,9 @@ pub const Server = struct {
     }
 
     pub fn waitEvent(self: *Server) !?ClientEvent {
-        var reader = self.socket.reader();
+        const reader: *std.Io.Reader = &self.socket_reader.interface;
 
-        const message_byte = reader.readByte() catch |err| switch (err) {
+        const message_byte = reader.takeByte() catch |err| switch (err) {
             error.EndOfStream => return null,
             else => |e| return e,
         };
@@ -381,7 +397,7 @@ pub const Server = struct {
         switch (message_type) {
             .set_pixel_format => {
                 var padding: [3]u8 = undefined;
-                try reader.readNoEof(&padding);
+                try reader.readSliceAll(&padding);
 
                 const pf = try PixelFormat.deserialize(reader);
                 self.pixel_format = pf; // update the current pixel format
@@ -389,9 +405,9 @@ pub const Server = struct {
             },
             .set_encodings => {
                 var padding: [1]u8 = undefined;
-                try reader.readNoEof(&padding);
+                try reader.readSliceAll(&padding);
 
-                const num_encodings = try reader.readInt(u16, .big);
+                const num_encodings = try reader.takeInt(u16, .big);
 
                 try self.temp_memory.resize(@sizeOf(Encoding) * num_encodings);
 
@@ -399,17 +415,17 @@ pub const Server = struct {
 
                 var i: usize = 0;
                 while (i < num_encodings) : (i += 1) {
-                    encodings[i] = @as(Encoding, @enumFromInt(try reader.readInt(i32, .big)));
+                    encodings[i] = @as(Encoding, @enumFromInt(try reader.takeInt(i32, .big)));
                 }
 
                 return ClientEvent{ .set_encodings = encodings };
             },
             .framebuffer_update_request => {
-                const incremental = try reader.readByte();
-                const x_pos = try reader.readInt(u16, .big);
-                const y_pos = try reader.readInt(u16, .big);
-                const width = try reader.readInt(u16, .big);
-                const height = try reader.readInt(u16, .big);
+                const incremental = try reader.takeByte();
+                const x_pos = try reader.takeInt(u16, .big);
+                const y_pos = try reader.takeInt(u16, .big);
+                const width = try reader.takeInt(u16, .big);
+                const height = try reader.takeInt(u16, .big);
 
                 return ClientEvent{
                     .framebuffer_update_request = .{
@@ -422,21 +438,21 @@ pub const Server = struct {
                 };
             },
             .key_event => {
-                const down_flag = try reader.readByte();
+                const down_flag = try reader.takeByte();
 
                 var padding: [2]u8 = undefined;
-                try reader.readNoEof(&padding);
+                try reader.readSliceAll(&padding);
 
-                const key: Key = @enumFromInt(try reader.readInt(u32, .big));
+                const key: Key = @enumFromInt(try reader.takeInt(u32, .big));
 
                 return ClientEvent{
                     .key_event = .{ .key = key, .down = (down_flag != 0) },
                 };
             },
             .pointer_event => {
-                const button_mask = try reader.readByte();
-                const x_pos = try reader.readInt(u16, .big);
-                const y_pos = try reader.readInt(u16, .big);
+                const button_mask = try reader.takeByte();
+                const x_pos = try reader.takeInt(u16, .big);
+                const y_pos = try reader.takeInt(u16, .big);
 
                 return ClientEvent{
                     .pointer_event = .{ .x = x_pos, .y = y_pos, .buttons = button_mask },
@@ -444,13 +460,13 @@ pub const Server = struct {
             },
             .client_cut_text => {
                 var padding: [3]u8 = undefined;
-                try reader.readNoEof(&padding);
+                try reader.readSliceAll(&padding);
 
-                const msg_length = try reader.readInt(u32, .big);
+                const msg_length = try reader.takeInt(u32, .big);
 
                 try self.temp_memory.resize(msg_length);
 
-                try reader.readNoEof(self.temp_memory.items);
+                try reader.readSliceAll(self.temp_memory.items);
 
                 return ClientEvent{
                     .client_cut_text = self.temp_memory.items,
@@ -474,8 +490,7 @@ pub const Server = struct {
     pub fn sendFramebufferUpdate(self: *Server, rectangles: []const UpdateRectangle) !void {
         const num_rects = std.math.cast(u16, rectangles.len) orelse return error.Overflow;
 
-        var buffered_writer = std.io.bufferedWriter(self.socket.writer());
-        const writer = buffered_writer.writer();
+        const writer: *std.Io.Writer = &self.socket_writer.interface;
         try writer.writeByte(@intFromEnum(ServerMessageType.framebuffer_update));
         try writer.writeByte(0); // padding
 
@@ -490,7 +505,7 @@ pub const Server = struct {
             try writer.writeAll(rect.data);
         }
 
-        try buffered_writer.flush();
+        try writer.flush();
     }
 
     /// Changes entries in the clients color map.
@@ -499,7 +514,7 @@ pub const Server = struct {
     pub fn sendSetColorMapEntries(self: *Server, first: u16, colors: []const Color) !void {
         const color_count = try std.math.cast(u16, colors.len);
 
-        var writer = self.socket.writer();
+        const writer: *std.Io.Writer = &self.socket_writer.interface;
         try writer.writeByte(@intFromEnum(ServerMessageType.set_color_map_entries));
         try writer.writeByte(0); // padding
 
@@ -511,11 +526,12 @@ pub const Server = struct {
             try writer.writeInt(u16, @intFromFloat(std.math.maxInt(u16) * std.math.clamp(c.g, 0.0, 1.0)), .big);
             try writer.writeInt(u16, @intFromFloat(std.math.maxInt(u16) * std.math.clamp(c.b, 0.0, 1.0)), .big);
         }
+        try writer.flush();
     }
 
     /// Rings a signal on the viewer if possible.
     pub fn sendBell(self: *Server) !void {
-        var writer = self.socket.writer();
+        const writer: *std.Io.Writer = &self.socket_writer.interface;
         try writer.writeByte(@intFromEnum(ServerMessageType.bell));
     }
 
@@ -524,7 +540,7 @@ pub const Server = struct {
     pub fn sendServerCutText(self: *Server, text: []const u8) !void {
         const length = std.math.cast(u32, text.len) orelse return error.Overflow;
 
-        var writer = self.socket.writer();
+        const writer: *std.Io.Writer = &self.socket_writer.interface;
         try writer.writeByte(@intFromEnum(ServerMessageType.server_cut_text));
         try writer.writeByte(0); // padding
         try writer.writeByte(0); // padding

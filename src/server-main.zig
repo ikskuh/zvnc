@@ -1,9 +1,12 @@
 const std = @import("std");
 const network = @import("network");
 
-const vnc = @import("vnc");
+const vnc = @import("vnc.zig");
 
 pub fn main() anyerror!void {
+    try network.init();
+    defer network.deinit();
+
     var server_sock = try network.Socket.create(.ipv4, .tcp);
     defer server_sock.close();
 
@@ -16,11 +19,21 @@ pub fn main() anyerror!void {
 
     const client = try server_sock.accept();
 
-    var server = try vnc.Server.open(std.heap.page_allocator, client, .{
-        .screen_width = 320,
-        .screen_height = 240,
-        .desktop_name = "Virtual Desktop",
-    });
+    var server_read_buff: [1024]u8 = undefined;
+    var server_write_buff: [1024]u8 = undefined;
+    var server = try vnc.Server.open(
+        std.heap.page_allocator,
+        client,
+        .{
+            .screen_width = 320,
+            .screen_height = 240,
+            .desktop_name = "Virtual Desktop",
+        },
+        .{
+            .reader = &server_read_buff,
+            .writer = &server_write_buff,
+        },
+    );
     defer server.close();
 
     std.debug.print("protocol version:  {}\n", .{server.protocol_version});
@@ -33,8 +46,8 @@ pub fn main() anyerror!void {
             .set_pixel_format => {}, // use internal handler
 
             .framebuffer_update_request => |req| {
-                var fb = std.ArrayList(u8).init(std.heap.page_allocator);
-                defer fb.deinit();
+                var fb = try std.ArrayList(u8).initCapacity(std.heap.page_allocator, req.height * req.width * 4);
+                defer fb.deinit(std.heap.page_allocator);
 
                 const now = std.time.nanoTimestamp();
 
@@ -55,7 +68,7 @@ pub fn main() anyerror!void {
 
                         var buf: [8]u8 = undefined;
                         const bits = server.pixel_format.encode(&buf, c);
-                        try fb.appendSlice(bits);
+                        try fb.appendSliceBounded(bits);
                     }
                 }
 
