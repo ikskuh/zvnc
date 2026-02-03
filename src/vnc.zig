@@ -307,6 +307,7 @@ pub const Server = struct {
         {
             try writer.writeByte(1); // number of types
             try writer.writeByte(@intFromEnum(Security.none)); // "no security"
+            try writer.flush();
 
             const selected_security = std.meta.intToEnum(Security, try reader.takeByte()) catch return error.ProtocolMismatch;
 
@@ -363,9 +364,13 @@ pub const Server = struct {
 
             try writer.writeInt(u32, desktop_name_len, .big); // virtual desktop name len
             try writer.writeAll(properties.desktop_name); // virtual desktop name bytes
+            try writer.flush();
 
             break :blk (shared_flag != 0);
         };
+
+        // Assert we didn't forget to perform a full handshake:
+        std.debug.assert(writer.buffered().len == 0);
 
         return .{
             .socket = sock,
@@ -386,6 +391,10 @@ pub const Server = struct {
     }
 
     pub fn waitEvent(self: *Server) !?ClientEvent {
+        // Check pre- and post-conditions so we never forget a flush.
+        std.debug.assert(self.socket_writer.interface.buffered().len == 0);
+        defer std.debug.assert(self.socket_writer.interface.buffered().len == 0);
+
         const reader: *std.Io.Reader = &self.socket_reader.interface;
 
         const message_byte = reader.takeByte() catch |err| switch (err) {
