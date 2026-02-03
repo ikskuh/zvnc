@@ -148,6 +148,11 @@ pub const PixelFormat = struct {
     green_shift: u8,
     blue_shift: u8,
 
+    /// Returns true if the pixel format is using indexed colors.
+    pub fn is_indexed(pf: PixelFormat) bool {
+        return (pf.true_color == 0);
+    }
+
     pub fn serialize(self: PixelFormat, writer: *std.Io.Writer) !void {
         try writer.writeInt(u8, self.bpp, .big);
         try writer.writeInt(u8, self.depth, .big);
@@ -391,10 +396,6 @@ pub const Server = struct {
     }
 
     pub fn waitEvent(self: *Server) !?ClientEvent {
-        // Check pre- and post-conditions so we never forget a flush.
-        std.debug.assert(self.socket_writer.interface.buffered().len == 0);
-        defer std.debug.assert(self.socket_writer.interface.buffered().len == 0);
-
         const reader: *std.Io.Reader = &self.socket_reader.interface;
 
         const message_byte = reader.takeByte() catch |err| switch (err) {
@@ -497,6 +498,10 @@ pub const Server = struct {
     }
 
     pub fn sendFramebufferUpdate(self: *Server, rectangles: []const UpdateRectangle) !void {
+        // Check pre- and post-conditions so we never forget a flush.
+        std.debug.assert(self.socket_writer.interface.buffered().len == 0);
+        defer std.debug.assert(self.socket_writer.interface.buffered().len == 0);
+
         const num_rects = std.math.cast(u16, rectangles.len) orelse return error.Overflow;
 
         const writer: *std.Io.Writer = &self.socket_writer.interface;
@@ -521,7 +526,11 @@ pub const Server = struct {
     /// - `first` is the first color entry to change.
     /// - `colors` is a slice of colors that will be written to the client color map at the offset `first`.
     pub fn sendSetColorMapEntries(self: *Server, first: u16, colors: []const Color) !void {
-        const color_count = try std.math.cast(u16, colors.len);
+        // Check pre- and post-conditions so we never forget a flush.
+        std.debug.assert(self.socket_writer.interface.buffered().len == 0);
+        defer std.debug.assert(self.socket_writer.interface.buffered().len == 0);
+
+        const color_count = std.math.cast(u16, colors.len) orelse return error.Overflow;
 
         const writer: *std.Io.Writer = &self.socket_writer.interface;
         try writer.writeByte(@intFromEnum(ServerMessageType.set_color_map_entries));
@@ -540,13 +549,22 @@ pub const Server = struct {
 
     /// Rings a signal on the viewer if possible.
     pub fn sendBell(self: *Server) !void {
+        // Check pre- and post-conditions so we never forget a flush.
+        std.debug.assert(self.socket_writer.interface.buffered().len == 0);
+        defer std.debug.assert(self.socket_writer.interface.buffered().len == 0);
+
         const writer: *std.Io.Writer = &self.socket_writer.interface;
         try writer.writeByte(@intFromEnum(ServerMessageType.bell));
+        try writer.flush();
     }
 
     /// Sets the new clipboard content of the viewer.
     /// - `text` is the ISO 8859-1 (Latin-1) encoded text.
     pub fn sendServerCutText(self: *Server, text: []const u8) !void {
+        // Check pre- and post-conditions so we never forget a flush.
+        std.debug.assert(self.socket_writer.interface.buffered().len == 0);
+        defer std.debug.assert(self.socket_writer.interface.buffered().len == 0);
+
         const length = std.math.cast(u32, text.len) orelse return error.Overflow;
 
         const writer: *std.Io.Writer = &self.socket_writer.interface;
@@ -556,6 +574,7 @@ pub const Server = struct {
         try writer.writeByte(0); // padding
         try writer.writeInt(u32, length, .big);
         try writer.writeAll(text);
+        try writer.flush();
     }
 };
 
