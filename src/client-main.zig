@@ -1,22 +1,28 @@
 const std = @import("std");
-const network = @import("network");
+// const network = @import("network");
 
 const vnc = @import("vnc");
 
-pub fn main() !u8 {
-    try network.init();
-    defer network.deinit();
+pub fn main(init: std.process.Init) !u8 {
+    // try network.init();
+    // defer network.deinit();
 
-    var socket = try network.connectToHost(std.heap.page_allocator, "localhost", 5900, .tcp);
-    defer socket.close();
+    const io = init.io;
+
+    var stream = try std.Io.net.HostName.connect(
+        try .init("localhost"),
+        io,
+        5900,
+        .{ .protocol = .tcp, .mode = .stream },
+    );
+    defer stream.close(io);
 
     var read_buffer: [1024]u8 = undefined;
-    var sock_reader = socket.reader(&read_buffer);
-    const reader: *std.Io.Reader = &sock_reader.interface;
+    var stream_reader = stream.reader(io, &read_buffer);
+    const reader: *std.Io.Reader = &stream_reader.interface;
     var write_buffer: [1024]u8 = undefined;
-    var sock_writer = socket.writer(&write_buffer);
-    const writer: *std.Io.Writer = &sock_writer.interface;
-    // const writer = socket.writer();
+    var stream_writer = stream.writer(io, &write_buffer);
+    const writer: *std.Io.Writer = &stream_writer.interface;
 
     var server_version_str: [12]u8 = undefined;
     try reader.readSliceAll(&server_version_str);

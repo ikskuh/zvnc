@@ -3,26 +3,33 @@ const network = @import("network");
 
 const vnc = @import("vnc.zig");
 
-pub fn main() anyerror!void {
-    try network.init();
-    defer network.deinit();
+pub fn main(init: std.process.Init) anyerror!void {
+    const io = init.io;
 
-    var server_sock = try network.Socket.create(.ipv4, .tcp);
-    defer server_sock.close();
+    // try network.init();
+    // defer network.deinit();
 
-    try server_sock.enablePortReuse(true);
-    try server_sock.bindToPort(5900);
+    // var server_sock = try network.Socket.create(.ipv4, .tcp);
+    // defer server_sock.close();
 
-    try server_sock.listen();
+    // try server_sock.enablePortReuse(true);
+    // try server_sock.bindToPort(5900);
+
+    // try server_sock.listen();
+
+    const server_addr: std.Io.net.IpAddress = .{ .ip4 = .unspecified(5900) };
+    var server_sock = try server_addr.listen(io, .{ .reuse_address = true });
+    defer server_sock.deinit(io);
 
     std.debug.print("waiting for client...\n", .{});
 
-    const client = try server_sock.accept();
+    const client = try server_sock.accept(io);
 
     var server_read_buff: [1024]u8 = undefined;
     var server_write_buff: [1024]u8 = undefined;
     var server = try vnc.Server.open(
         std.heap.page_allocator,
+        init.io,
         client,
         .{
             .screen_width = 320,
@@ -34,12 +41,12 @@ pub fn main() anyerror!void {
             .writer = &server_write_buff,
         },
     );
-    defer server.close();
+    defer server.close(io);
 
     std.debug.print("protocol version:  {}\n", .{server.protocol_version});
     std.debug.print("shared connection: {}\n", .{server.shared_connection});
 
-    const start = std.time.nanoTimestamp();
+    const start: std.Io.Timestamp = .now(io, .awake);
 
     while (try server.waitEvent()) |event| {
         switch (event) {
@@ -49,9 +56,9 @@ pub fn main() anyerror!void {
                 var fb = try std.ArrayList(u8).initCapacity(std.heap.page_allocator, req.height * req.width * 4);
                 defer fb.deinit(std.heap.page_allocator);
 
-                const now = std.time.nanoTimestamp();
+                const now: std.Io.Timestamp = .now(io, .awake);
 
-                const delta = @as(f32, @floatFromInt(now - start)) / std.time.ns_per_s;
+                const delta = @as(f32, @floatFromInt(start.durationTo(now).toNanoseconds())) / std.time.ns_per_s;
 
                 var y: usize = 0;
                 while (y < req.height) : (y += 1) {
