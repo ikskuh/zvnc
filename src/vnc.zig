@@ -4,7 +4,6 @@
 //! - https://en.wikipedia.org/wiki/RFB_protocol
 //!
 const std = @import("std");
-// const network = @import("network");
 
 pub const Color = struct {
     r: f32,
@@ -312,7 +311,7 @@ pub const Server = struct {
         // Security handshake. We are insecure.
         {
             try writer.writeByte(1); // number of types
-            try writer.writeByte(@intFromEnum(Security.none)); // "no security"
+            try writer.writeByte(@backingInt(Security.none)); // "no security"
             try writer.flush();
 
             const selected_security = std.enums.fromInt(Security, try reader.takeByte()) orelse return error.ProtocolMismatch;
@@ -426,7 +425,7 @@ pub const Server = struct {
 
                 var i: usize = 0;
                 while (i < num_encodings) : (i += 1) {
-                    encodings[i] = @as(Encoding, @enumFromInt(try reader.takeInt(i32, .big)));
+                    encodings[i] = @as(Encoding, @fromBackingInt(try reader.takeInt(i32, .big)));
                 }
 
                 return ClientEvent{ .set_encodings = encodings };
@@ -454,7 +453,7 @@ pub const Server = struct {
                 var padding: [2]u8 = undefined;
                 try reader.readSliceAll(&padding);
 
-                const key: Key = @enumFromInt(try reader.takeInt(u32, .big));
+                const key: Key = @fromBackingInt(try reader.takeInt(u32, .big));
 
                 return ClientEvent{
                     .key_event = .{ .key = key, .down = (down_flag != 0) },
@@ -506,7 +505,7 @@ pub const Server = struct {
         const num_rects = std.math.cast(u16, rectangles.len) orelse return error.Overflow;
 
         const writer: *std.Io.Writer = &self.stream_writer.interface;
-        try writer.writeByte(@intFromEnum(ServerMessageType.framebuffer_update));
+        try writer.writeByte(@backingInt(ServerMessageType.framebuffer_update));
         try writer.writeByte(0); // padding
 
         try writer.writeInt(u16, num_rects, .big);
@@ -516,7 +515,7 @@ pub const Server = struct {
             try writer.writeInt(u16, rect.y, .big);
             try writer.writeInt(u16, rect.width, .big);
             try writer.writeInt(u16, rect.height, .big);
-            try writer.writeInt(i32, @intFromEnum(rect.encoding), .big);
+            try writer.writeInt(i32, @backingInt(rect.encoding), .big);
             try writer.writeAll(rect.data);
         }
 
@@ -534,7 +533,7 @@ pub const Server = struct {
         const color_count = std.math.cast(u16, colors.len) orelse return error.Overflow;
 
         const writer: *std.Io.Writer = &self.stream_writer.interface;
-        try writer.writeByte(@intFromEnum(ServerMessageType.set_color_map_entries));
+        try writer.writeByte(@backingInt(ServerMessageType.set_color_map_entries));
         try writer.writeByte(0); // padding
 
         try writer.writeInt(u16, first, .big);
@@ -555,7 +554,7 @@ pub const Server = struct {
         defer std.debug.assert(self.stream_writer.interface.buffered().len == 0);
 
         const writer: *std.Io.Writer = &self.stream_writer.interface;
-        try writer.writeByte(@intFromEnum(ServerMessageType.bell));
+        try writer.writeByte(@backingInt(ServerMessageType.bell));
         try writer.flush();
     }
 
@@ -569,7 +568,7 @@ pub const Server = struct {
         const length = std.math.cast(u32, text.len) orelse return error.Overflow;
 
         const writer: *std.Io.Writer = &self.stream_writer.interface;
-        try writer.writeByte(@intFromEnum(ServerMessageType.server_cut_text));
+        try writer.writeByte(@backingInt(ServerMessageType.server_cut_text));
         try writer.writeByte(0); // padding
         try writer.writeByte(0); // padding
         try writer.writeByte(0); // padding

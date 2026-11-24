@@ -6,17 +6,6 @@ const vnc = @import("vnc.zig");
 pub fn main(init: std.process.Init) anyerror!void {
     const io = init.io;
 
-    // try network.init();
-    // defer network.deinit();
-
-    // var server_sock = try network.Socket.create(.ipv4, .tcp);
-    // defer server_sock.close();
-
-    // try server_sock.enablePortReuse(true);
-    // try server_sock.bindToPort(5900);
-
-    // try server_sock.listen();
-
     const server_addr: std.Io.net.IpAddress = .{ .ip4 = .unspecified(5900) };
     var server_sock = try server_addr.listen(io, .{ .reuse_address = true });
     defer server_sock.deinit(io);
@@ -92,7 +81,7 @@ pub fn main(init: std.process.Init) anyerror!void {
             },
 
             .key_event => |ev| {
-                if (ev.key == @as(vnc.Key, @enumFromInt(' '))) {
+                if (ev.key == @as(vnc.Key, @fromBackingInt(@intCast(' ')))) {
                     try server.sendBell();
                 } else if (ev.key == .@"return") {
                     try server.sendServerCutText("HELLO, WORLD!");

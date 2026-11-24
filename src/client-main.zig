@@ -1,12 +1,8 @@
 const std = @import("std");
-// const network = @import("network");
 
 const vnc = @import("vnc");
 
 pub fn main(init: std.process.Init) !u8 {
-    // try network.init();
-    // defer network.deinit();
-
     const io = init.io;
 
     var stream = try std.Io.net.HostName.connect(
