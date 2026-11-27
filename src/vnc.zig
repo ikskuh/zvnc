@@ -4,7 +4,6 @@
 //! - https://en.wikipedia.org/wiki/RFB_protocol
 //!
 const std = @import("std");
-const network = @import("network");
 
 pub const Color = struct {
     r: f32,
@@ -242,14 +241,14 @@ pub const PixelFormat = struct {
         , .{
             pf.bpp,
             pf.depth,
-                // pf.big_endian,
-                // pf.true_color,
-                // pf.red_max,
-                // pf.green_max,
-                // pf.blue_max,
-                // pf.red_shift,
-                // pf.green_shift,
-                // pf.blue_shift,
+            // pf.big_endian,
+            // pf.true_color,
+            // pf.red_max,
+            // pf.green_max,
+            // pf.blue_max,
+            // pf.red_shift,
+            // pf.green_shift,
+            // pf.blue_shift,
         });
     }
 };
@@ -268,10 +267,10 @@ pub const ServerProperties = struct {
 };
 
 pub const Server = struct {
-    socket: network.Socket,
+    stream: std.Io.net.Stream,
     temp_memory: std.array_list.AlignedManaged(u8, .@"16"),
-    socket_reader: network.Socket.Reader,
-    socket_writer: network.Socket.Writer,
+    stream_reader: std.Io.net.Stream.Reader,
+    stream_writer: std.Io.net.Stream.Writer,
 
     // public api:
 
@@ -281,21 +280,22 @@ pub const Server = struct {
 
     pub fn open(
         allocator: std.mem.Allocator,
-        sock: network.Socket,
+        io: std.Io,
+        stream: std.Io.net.Stream,
         properties: ServerProperties,
         buffers: struct {
             reader: []u8,
             writer: []u8,
         },
     ) !Server {
-        errdefer sock.close();
+        errdefer stream.close(io);
 
         const desktop_name_len = std.math.cast(u32, properties.desktop_name.len) orelse return error.Overflow;
 
-        var sock_writer = sock.writer(buffers.writer);
-        const writer: *std.Io.Writer = &sock_writer.interface;
-        var sock_reader = sock.reader(buffers.reader);
-        const reader: *std.Io.Reader = &sock_reader.interface;
+        var stream_writer = stream.writer(io, buffers.writer);
+        const writer: *std.Io.Writer = &stream_writer.interface;
+        var stream_reader = stream.reader(io, buffers.reader);
+        const reader: *std.Io.Reader = &stream_reader.interface;
 
         // Initial handshake
         const protocol_version = blk: {
@@ -311,10 +311,10 @@ pub const Server = struct {
         // Security handshake. We are insecure.
         {
             try writer.writeByte(1); // number of types
-            try writer.writeByte(@intFromEnum(Security.none)); // "no security"
+            try writer.writeByte(@backingInt(Security.none)); // "no security"
             try writer.flush();
 
-            const selected_security = std.meta.intToEnum(Security, try reader.takeByte()) catch return error.ProtocolMismatch;
+            const selected_security = std.enums.fromInt(Security, try reader.takeByte()) orelse return error.ProtocolMismatch;
 
             std.debug.print("client security: {}\n", .{selected_security});
 
@@ -322,7 +322,7 @@ pub const Server = struct {
                 .none => true,
                 .vnc_authentication => blk: {
                     var challenge: [16]u8 = undefined;
-                    std.crypto.random.bytes(&challenge);
+                    io.randomSecure(&challenge) catch io.random(&challenge);
                     try writer.writeAll(&challenge);
                     try writer.flush();
 
@@ -378,10 +378,10 @@ pub const Server = struct {
         std.debug.assert(writer.buffered().len == 0);
 
         return .{
-            .socket = sock,
+            .stream = stream,
             .temp_memory = std.array_list.AlignedManaged(u8, .@"16").init(allocator),
-            .socket_reader = sock_reader,
-            .socket_writer = sock_writer,
+            .stream_reader = stream_reader,
+            .stream_writer = stream_writer,
 
             .protocol_version = protocol_version,
             .shared_connection = shared_connection,
@@ -389,21 +389,21 @@ pub const Server = struct {
         };
     }
 
-    pub fn close(self: *Server) void {
+    pub fn close(self: *Server, io: std.Io) void {
         self.temp_memory.deinit();
-        self.socket.close();
+        self.stream.close(io);
         self.* = undefined;
     }
 
     pub fn waitEvent(self: *Server) !?ClientEvent {
-        const reader: *std.Io.Reader = &self.socket_reader.interface;
+        const reader: *std.Io.Reader = &self.stream_reader.interface;
 
         const message_byte = reader.takeByte() catch |err| switch (err) {
             error.EndOfStream => return null,
             else => |e| return e,
         };
 
-        const message_type = std.meta.intToEnum(ClientMessageType, message_byte) catch return error.ProtocolViolation;
+        const message_type = std.enums.fromInt(ClientMessageType, message_byte) orelse return error.ProtocolViolation;
         switch (message_type) {
             .set_pixel_format => {
                 var padding: [3]u8 = undefined;
@@ -425,7 +425,7 @@ pub const Server = struct {
 
                 var i: usize = 0;
                 while (i < num_encodings) : (i += 1) {
-                    encodings[i] = @as(Encoding, @enumFromInt(try reader.takeInt(i32, .big)));
+                    encodings[i] = @as(Encoding, @fromBackingInt(try reader.takeInt(i32, .big)));
                 }
 
                 return ClientEvent{ .set_encodings = encodings };
@@ -453,7 +453,7 @@ pub const Server = struct {
                 var padding: [2]u8 = undefined;
                 try reader.readSliceAll(&padding);
 
-                const key: Key = @enumFromInt(try reader.takeInt(u32, .big));
+                const key: Key = @fromBackingInt(try reader.takeInt(u32, .big));
 
                 return ClientEvent{
                     .key_event = .{ .key = key, .down = (down_flag != 0) },
@@ -499,13 +499,13 @@ pub const Server = struct {
 
     pub fn sendFramebufferUpdate(self: *Server, rectangles: []const UpdateRectangle) !void {
         // Check pre- and post-conditions so we never forget a flush.
-        std.debug.assert(self.socket_writer.interface.buffered().len == 0);
-        defer std.debug.assert(self.socket_writer.interface.buffered().len == 0);
+        std.debug.assert(self.stream_writer.interface.buffered().len == 0);
+        defer std.debug.assert(self.stream_writer.interface.buffered().len == 0);
 
         const num_rects = std.math.cast(u16, rectangles.len) orelse return error.Overflow;
 
-        const writer: *std.Io.Writer = &self.socket_writer.interface;
-        try writer.writeByte(@intFromEnum(ServerMessageType.framebuffer_update));
+        const writer: *std.Io.Writer = &self.stream_writer.interface;
+        try writer.writeByte(@backingInt(ServerMessageType.framebuffer_update));
         try writer.writeByte(0); // padding
 
         try writer.writeInt(u16, num_rects, .big);
@@ -515,7 +515,7 @@ pub const Server = struct {
             try writer.writeInt(u16, rect.y, .big);
             try writer.writeInt(u16, rect.width, .big);
             try writer.writeInt(u16, rect.height, .big);
-            try writer.writeInt(i32, @intFromEnum(rect.encoding), .big);
+            try writer.writeInt(i32, @backingInt(rect.encoding), .big);
             try writer.writeAll(rect.data);
         }
 
@@ -527,13 +527,13 @@ pub const Server = struct {
     /// - `colors` is a slice of colors that will be written to the client color map at the offset `first`.
     pub fn sendSetColorMapEntries(self: *Server, first: u16, colors: []const Color) !void {
         // Check pre- and post-conditions so we never forget a flush.
-        std.debug.assert(self.socket_writer.interface.buffered().len == 0);
-        defer std.debug.assert(self.socket_writer.interface.buffered().len == 0);
+        std.debug.assert(self.stream_writer.interface.buffered().len == 0);
+        defer std.debug.assert(self.stream_writer.interface.buffered().len == 0);
 
         const color_count = std.math.cast(u16, colors.len) orelse return error.Overflow;
 
-        const writer: *std.Io.Writer = &self.socket_writer.interface;
-        try writer.writeByte(@intFromEnum(ServerMessageType.set_color_map_entries));
+        const writer: *std.Io.Writer = &self.stream_writer.interface;
+        try writer.writeByte(@backingInt(ServerMessageType.set_color_map_entries));
         try writer.writeByte(0); // padding
 
         try writer.writeInt(u16, first, .big);
@@ -550,11 +550,11 @@ pub const Server = struct {
     /// Rings a signal on the viewer if possible.
     pub fn sendBell(self: *Server) !void {
         // Check pre- and post-conditions so we never forget a flush.
-        std.debug.assert(self.socket_writer.interface.buffered().len == 0);
-        defer std.debug.assert(self.socket_writer.interface.buffered().len == 0);
+        std.debug.assert(self.stream_writer.interface.buffered().len == 0);
+        defer std.debug.assert(self.stream_writer.interface.buffered().len == 0);
 
-        const writer: *std.Io.Writer = &self.socket_writer.interface;
-        try writer.writeByte(@intFromEnum(ServerMessageType.bell));
+        const writer: *std.Io.Writer = &self.stream_writer.interface;
+        try writer.writeByte(@backingInt(ServerMessageType.bell));
         try writer.flush();
     }
 
@@ -562,13 +562,13 @@ pub const Server = struct {
     /// - `text` is the ISO 8859-1 (Latin-1) encoded text.
     pub fn sendServerCutText(self: *Server, text: []const u8) !void {
         // Check pre- and post-conditions so we never forget a flush.
-        std.debug.assert(self.socket_writer.interface.buffered().len == 0);
-        defer std.debug.assert(self.socket_writer.interface.buffered().len == 0);
+        std.debug.assert(self.stream_writer.interface.buffered().len == 0);
+        defer std.debug.assert(self.stream_writer.interface.buffered().len == 0);
 
         const length = std.math.cast(u32, text.len) orelse return error.Overflow;
 
-        const writer: *std.Io.Writer = &self.socket_writer.interface;
-        try writer.writeByte(@intFromEnum(ServerMessageType.server_cut_text));
+        const writer: *std.Io.Writer = &self.stream_writer.interface;
+        try writer.writeByte(@backingInt(ServerMessageType.server_cut_text));
         try writer.writeByte(0); // padding
         try writer.writeByte(0); // padding
         try writer.writeByte(0); // padding

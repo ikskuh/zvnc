@@ -4,20 +4,15 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
 
-    const network_dep = b.dependency("network", .{});
-    const network_mod = network_dep.module("network");
-
     const vnc_mod = b.addModule("vnc", .{
         .root_source_file = b.path("src/vnc.zig"),
     });
-    vnc_mod.addImport("network", network_mod);
 
     const client_mod = b.createModule(.{
         .root_source_file = b.path("src/client-main.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "network", .module = network_mod },
             .{ .name = "vnc", .module = vnc_mod },
         },
     });
@@ -33,7 +28,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "network", .module = network_mod },
             .{ .name = "vnc", .module = vnc_mod },
         },
     });
@@ -45,9 +39,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(server_exe);
 
     const run_client_cmd = b.addRunArtifact(client_exe);
-    if (b.args) |args| {
-        run_client_cmd.addArgs(args);
-    }
+    run_client_cmd.addPassthruArgs();
 
     const run_server_cmd = b.addRunArtifact(server_exe);
 
